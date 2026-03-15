@@ -1,6 +1,6 @@
 import bpy
 from bpy_extras.io_utils import ExportHelper
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import Operator
 
 from . import pipeline
@@ -11,7 +11,7 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
 
     bl_idname = "export_scene.povmesh"
     bl_label = "POV-Ray Mesh2 (.pov)"
-    bl_description = "Export selected mesh object(s) as a combined POV-Ray mesh2"
+    bl_description = "Export selected mesh object(s) as a POV-Ray mesh2"
     bl_options = {"PRESET"}
 
     filename_ext = ".pov"
@@ -20,6 +20,72 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
         default="*.pov",
         options={"HIDDEN"},
         maxlen=255,
+    )
+
+    transform_mode: EnumProperty(
+        name="Transform Mode",
+        description=(
+            "Choose whether object transforms are baked into exported vertex "
+            "coordinates or emitted as object wrapper transforms in POV-Ray SDL"
+        ),
+        items=(
+            (
+                "BAKE_WORLD",
+                "Bake World Transform",
+                "Bake each object's world transform into vertex positions and normals",
+            ),
+            (
+                "EMIT_OBJECT_TRANSFORMS",
+                "Emit Object Transforms",
+                "Export object-local mesh data and emit a wrapper transform per object",
+            ),
+        ),
+        default="BAKE_WORLD",
+    )
+
+    coordinate_mode: EnumProperty(
+        name="Coordinate Mode",
+        description="Coordinate conversion policy for Blender to POV-Ray export",
+        items=(
+            (
+                "BLENDER_NATIVE",
+                "Blender Native",
+                "Do not remap coordinates; preserve current Phase 1 coordinate behavior",
+            ),
+            (
+                "BLENDER_TO_POV",
+                "Blender to POV",
+                "Apply the exporter coordinate conversion policy for POV-Ray space",
+            ),
+        ),
+        default="BLENDER_NATIVE",
+    )
+
+    export_materials: BoolProperty(
+        name="Export Materials",
+        description="Reserved for Phase 2 material export",
+        default=False,
+    )
+
+    emit_debug_helpers: BoolProperty(
+        name="Emit UV Debug Helpers",
+        description="Write built-in UV debug textures/macros into the exported SDL",
+        default=True,
+    )
+
+    combine_objects: BoolProperty(
+        name="Combine Objects",
+        description=(
+            "Combine selected objects into one mesh when using baked world transforms. "
+            "Ignored for emitted object transform mode"
+        ),
+        default=True,
+    )
+
+    include_comments: BoolProperty(
+        name="Include Comments",
+        description="Write explanatory comments into the exported SDL",
+        default=True,
     )
 
     @classmethod
@@ -38,9 +104,45 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
 
         return True
 
+    def draw(self, context):
+        layout = self.layout
+
+        box = layout.box()
+        box.label(text="Transform and Coordinates")
+        box.prop(self, "transform_mode")
+        box.prop(self, "coordinate_mode")
+
+        box = layout.box()
+        box.label(text="Output Options")
+        box.prop(self, "emit_debug_helpers")
+        box.prop(self, "include_comments")
+        box.prop(self, "export_materials")
+
+        box = layout.box()
+        box.label(text="Mesh Aggregation")
+        row = box.row()
+        row.enabled = self.transform_mode == "BAKE_WORLD"
+        row.prop(self, "combine_objects")
+
+        if self.transform_mode == "EMIT_OBJECT_TRANSFORMS":
+            warn = layout.box()
+            warn.label(
+                text="Per-object mesh declarations and wrapper transforms will be emitted.",
+                icon="INFO",
+            )
+
     def execute(self, context):
         try:
-            result = pipeline.export_povmesh(context, self.filepath)
+            result = pipeline.export_povmesh(
+                context=context,
+                filepath=self.filepath,
+                transform_mode=self.transform_mode,
+                coordinate_mode=self.coordinate_mode,
+                export_materials=self.export_materials,
+                emit_debug_helpers=self.emit_debug_helpers,
+                combine_objects=self.combine_objects,
+                include_comments=self.include_comments,
+            )
 
             if result == {"FINISHED"}:
                 self.report({"INFO"}, "POV-Ray mesh2 export completed.")

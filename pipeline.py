@@ -8,47 +8,77 @@ from .coordinate_policy import CoordinatePolicy
 from .export_types import (
     ExportContext,
     ExportOptions,
+    CoordinateMode,
     Face3,
     MeshData,
+    ObjectExportRecord,
     ObjectMeshData,
+    SceneExportData,
+    TransformMode,
     Vec2,
     Vec3,
 )
+from .transform_extractor import TransformExtractor
+from .writers_mesh import MeshDeclarationWriter
+from .writers_object import ObjectSceneWriter
 
 
 class ExportError(Exception):
     """Raised for expected exporter failures that should be shown to the user."""
 
-
-def export_povmesh(context, filepath):
+def export_povmesh(
+    context,
+    filepath,
+    transform_mode="BAKE_WORLD",
+    coordinate_mode="BLENDER_NATIVE",
+    export_materials=False,
+    emit_debug_helpers=True,
+    combine_objects=True,
+    include_comments=True,
+):
     """
-    Export one or more selected mesh objects as a single POV-Ray mesh2.
+    Export selected mesh objects to POV-Ray SDL.
 
-    Current strategy:
-    - deterministic object ordering
-    - evaluated mesh export
-    - Blender loop_triangles as the authoritative triangle source
-    - expanded per-triangle-corner export:
-        * one vertex per triangle corner
-        * one normal per triangle corner
-        * one UV per triangle corner
-      so face_indices, normal_indices, and uv_indices are identical
-    - object world transform baked into vertex positions
-    - vertex normals transformed to world space
-    - active render UV map exported when present
-    - U is flipped during export so POV-Ray image_map usage needs no texture scale hack
-    - emits optional debug SDL helpers for UV diagnosis
+    Phase 2 transform split
+    -----------------------
+    BAKE_WORLD
+        - geometry is baked to world space
+        - output is a single combined mesh2 declaration
 
-    Phase 2 Step 2:
-    - adds a centralized coordinate conversion policy
-    - default remains BLENDER_NATIVE, so behavior is unchanged unless a later
-      property or caller explicitly selects a different mode
+    EMIT_OBJECT_TRANSFORMS
+        - geometry remains object-local
+        - one mesh declaration is emitted per object
+        - one object wrapper is emitted per object with a matrix transform
     """
     try:
         export_ctx = ExportContext(filepath=Path(filepath))
-        export_options = ExportOptions()
+        export_options = ExportOptions(
+            transform_mode=TransformMode(transform_mode),
+            coordinate_mode=CoordinateMode(coordinate_mode),
+            export_materials=bool(export_materials),
+            emit_debug_helpers=bool(emit_debug_helpers),
+            combine_objects=bool(combine_objects),
+            include_comments=bool(include_comments),
+        )
 
         objects = MeshCollector.get_selected_mesh_objects(context)
+
+        if TransformExtractor.uses_emitted_object_transforms(export_options):
+            scene_data = MeshExtractor.extract_scene_data_for_transform_export(
+                context,
+                objects,
+                export_ctx,
+                export_options,
+            )
+            FileWriter.ensure_parent_dir(export_ctx.filepath)
+            SceneWriter.write_scene_file(export_ctx.filepath, scene_data)
+            print(
+                "[povmesh_export] Exported "
+                f"{len(scene_data.source_names)} object(s) to '{export_ctx.filepath}' "
+                "using emitted object transforms"
+            )
+            return {"FINISHED"}
+
         mesh_data = MeshExtractor.extract_combined_mesh(
             context,
             objects,
@@ -61,7 +91,7 @@ def export_povmesh(context, filepath):
 
         print(
             "[povmesh_export] Exported "
-            f"{len(mesh_data.source_names)} object(s) to '{export_ctx.filepath}'"
+            f"{len(mesh_data.source_names)} object(s) to '{export_ctx.filepath}' using baked world transforms"
         )
         return {"FINISHED"}
 
@@ -99,6 +129,16 @@ class MeshExtractor:
         export_ctx: ExportContext,
         export_options: ExportOptions,
     ) -> MeshData:
+        """
+        Build the Phase 1-compatible combined mesh payload.
+
+        This path is only valid for baked world-transform export.
+        """
+        if export_options.transform_mode != TransformMode.BAKE_WORLD:
+            raise ExportError(
+                "Combined mesh export currently requires TransformMode.BAKE_WORLD."
+            )
+
         combined_vertices: List[Vec3] = []
         combined_faces: List[Face3] = []
         combined_normals: List[Vec3] = []
@@ -158,6 +198,58 @@ class MeshExtractor:
         )
 
     @staticmethod
+    def extract_scene_data_for_transform_export(
+        context,
+        objects,
+        export_ctx: ExportContext,
+        export_options: ExportOptions,
+    ) -> SceneExportData:
+        """
+        Build per-object scene export records for emitted-transform mode.
+        """
+        if export_options.transform_mode != TransformMode.EMIT_OBJECT_TRANSFORMS:
+            raise ExportError(
+                "Scene-data transform export path requires TransformMode.EMIT_OBJECT_TRANSFORMS."
+            )
+
+        object_records: List[ObjectExportRecord] = []
+        source_names: List[str] = []
+
+        for obj in objects:
+            transform_data = TransformExtractor.extract_transform_data(obj, export_options)
+            object_mesh_data = MeshExtractor._extract_single_object_mesh(
+                context,
+                obj,
+                export_options,
+            )
+
+            if not object_mesh_data.faces:
+                continue
+
+            source_names.append(obj.name)
+            object_records.append(
+                ObjectExportRecord(
+                    source_name=obj.name,
+                    export_name=NamePolicy.make_object_export_name(obj.name),
+                    mesh_data=None,
+                    object_mesh_data=object_mesh_data,
+                    transform_data=transform_data,
+                    material_data=None,
+                )
+            )
+
+        if not object_records:
+            raise ExportError("Selected mesh objects contained no exportable faces.")
+
+        return SceneExportData(
+            export_context=export_ctx,
+            export_options=export_options,
+            object_records=object_records,
+            combined_mesh_data=None,
+            source_names=source_names,
+        )
+
+    @staticmethod
     def _extract_single_object_mesh(context, obj, export_options: ExportOptions) -> ObjectMeshData:
         depsgraph = context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
@@ -191,8 +283,10 @@ class MeshExtractor:
 class ExpandedCornerBuilder:
     @staticmethod
     def build_object_mesh_data(obj, mesh, export_options: ExportOptions) -> ObjectMeshData:
-        world_matrix = obj.matrix_world.copy()
-        normal_matrix = obj.matrix_world.to_3x3().inverted_safe().transposed()
+        point_matrix, normal_matrix = TransformExtractor.get_geometry_matrices(
+            obj,
+            export_options,
+        )
         uv_layer = UVExtractor.get_active_render_uv_layer(mesh)
 
         vertices: List[Vec3] = []
@@ -215,18 +309,26 @@ class ExpandedCornerBuilder:
                 vertex_index = mesh.loops[loop_index].vertex_index
                 vert = mesh.vertices[vertex_index]
 
-                co_world = world_matrix @ vert.co
+                co_export_source = point_matrix @ vert.co
                 co_export = CoordinatePolicy.convert_point(
-                    (co_world.x, co_world.y, co_world.z),
+                    (
+                        float(co_export_source.x),
+                        float(co_export_source.y),
+                        float(co_export_source.z),
+                    ),
                     export_options.coordinate_mode,
                 )
                 vertices.append(co_export)
                 face_corner_indices.append(len(vertices) - 1)
 
-                normal_world = normal_matrix @ vert.normal
-                normal_world.normalize()
+                normal_export_source = normal_matrix @ vert.normal
+                normal_export_source.normalize()
                 normal_export = CoordinatePolicy.convert_normal(
-                    (normal_world.x, normal_world.y, normal_world.z),
+                    (
+                        float(normal_export_source.x),
+                        float(normal_export_source.y),
+                        float(normal_export_source.z),
+                    ),
                     export_options.coordinate_mode,
                 )
                 normals.append(normal_export)
@@ -323,7 +425,11 @@ class Mesh2Writer:
     ) -> None:
         with open(filepath, "w", encoding="utf-8", newline="\n") as f:
             Mesh2Writer._write_header(f, mesh_data, export_options)
-            Mesh2Writer._write_mesh2_block(f, mesh_data)
+            MeshDeclarationWriter.write_mesh_declaration(
+                f,
+                mesh_data.export_name,
+                mesh_data,
+            )
             f.write("\n")
             if export_options.emit_debug_helpers:
                 DebugMaterialWriter.write_debug_block(f, mesh_data)
@@ -340,12 +446,21 @@ class Mesh2Writer:
         f.write("// Generated by Blender add-on: POV-Ray Mesh2 Exporter\n")
         f.write("// Export mode: combined selected mesh objects\n")
         f.write("// Geometry policy: expanded per-triangle-corner export\n")
-        f.write(
-            "// Transform policy: each object's world transform baked into vertex positions\n"
-        )
-        f.write("// Normal policy: vertex normals transformed to world space\n")
+
+        if export_options.transform_mode == TransformMode.BAKE_WORLD:
+            f.write(
+                "// Transform policy: each object's world transform baked into vertex positions\n"
+            )
+            f.write("// Normal policy: vertex normals transformed to world space\n")
+        else:
+            f.write(
+                "// Transform policy: object-local geometry with deferred wrapper transforms\n"
+            )
+            f.write("// Normal policy: object-local vertex normals\n")
+
         f.write(f"// Coordinate policy: {policy_info.short_label}\n")
         f.write(f"// Coordinate policy detail: {policy_info.description}\n")
+
         if mesh_data.uvs and mesh_data.uv_indices:
             f.write("// UV policy: active render UV map exported per triangle corner\n")
             f.write(
@@ -353,103 +468,102 @@ class Mesh2Writer:
             )
         else:
             f.write("// UV policy: no active render UV map found\n")
+
         f.write("// Source objects:\n")
         for name in mesh_data.source_names:
             f.write(f"//   - {name}\n")
         f.write("\n")
 
-    @staticmethod
-    def _write_mesh2_block(f: TextIO, mesh_data: MeshData) -> None:
-        f.write(f"#declare {mesh_data.export_name} = mesh2 {{\n")
-        Mesh2Writer._write_vertex_vectors(f, mesh_data.vertices)
-        f.write("\n")
-        Mesh2Writer._write_normal_vectors(f, mesh_data.normals)
 
-        if mesh_data.uvs and mesh_data.uv_indices:
+class SceneWriter:
+    @staticmethod
+    def write_scene_file(filepath: Path, scene_data: SceneExportData) -> None:
+        with open(filepath, "w", encoding="utf-8", newline="\n") as f:
+            SceneWriter._write_header(f, scene_data)
+            SceneWriter._write_mesh_declarations(f, scene_data)
             f.write("\n")
-            Mesh2Writer._write_uv_vectors(f, mesh_data.uvs)
-
-        f.write("\n")
-        Mesh2Writer._write_face_indices(f, mesh_data.faces)
-        f.write("\n")
-        Mesh2Writer._write_normal_indices(f, mesh_data.normal_indices)
-
-        if mesh_data.uvs and mesh_data.uv_indices:
+            SceneWriter._write_debug_helpers(f, scene_data)
             f.write("\n")
-            Mesh2Writer._write_uv_indices(f, mesh_data.uv_indices)
-
-        f.write("}\n")
+            ObjectSceneWriter.write_object_declarations(f, scene_data)
 
     @staticmethod
-    def _write_vertex_vectors(f: TextIO, vertices: Sequence[Vec3]) -> None:
-        f.write(f"    vertex_vectors {{ {len(vertices)},\n")
-        for index, vert in enumerate(vertices):
-            suffix = "," if index < len(vertices) - 1 else ""
-            f.write(f"        {Formatters.vec3(vert)}{suffix}\n")
-        f.write("    }\n")
+    def _write_header(f: TextIO, scene_data: SceneExportData) -> None:
+        policy_info = CoordinatePolicy.get_info(scene_data.export_options.coordinate_mode)
+
+        f.write("// POV-Ray mesh2 export\n")
+        f.write("// Generated by Blender add-on: POV-Ray Mesh2 Exporter\n")
+        f.write("// Export mode: per-object mesh declarations with emitted object transforms\n")
+        f.write("// Geometry policy: expanded per-triangle-corner export\n")
+        f.write("// Transform policy: object-local geometry with wrapper transforms emitted in SDL\n")
+        f.write("// Normal policy: object-local vertex normals\n")
+        f.write(f"// Coordinate policy: {policy_info.short_label}\n")
+        f.write(f"// Coordinate policy detail: {policy_info.description}\n")
+        f.write("// Source objects:\n")
+        for name in scene_data.source_names:
+            f.write(f"//   - {name}\n")
+        f.write("\n")
 
     @staticmethod
-    def _write_normal_vectors(f: TextIO, normals: Sequence[Vec3]) -> None:
-        f.write(f"    normal_vectors {{ {len(normals)},\n")
-        for index, normal in enumerate(normals):
-            suffix = "," if index < len(normals) - 1 else ""
-            f.write(f"        {Formatters.vec3(normal)}{suffix}\n")
-        f.write("    }\n")
+    def _write_mesh_declarations(f: TextIO, scene_data: SceneExportData) -> None:
+        f.write("// ------------------------------------------------------------\n")
+        f.write("// Mesh declarations\n")
+        f.write("// ------------------------------------------------------------\n")
+        for record in scene_data.object_records:
+            if record.object_mesh_data is None:
+                continue
+
+            MeshDeclarationWriter.write_object_mesh_declaration(
+                f,
+                record.export_name,
+                record.object_mesh_data,
+            )
+            f.write("\n")
 
     @staticmethod
-    def _write_uv_vectors(f: TextIO, uvs: Sequence[Vec2]) -> None:
-        f.write(f"    uv_vectors {{ {len(uvs)},\n")
-        for index, uv in enumerate(uvs):
-            suffix = "," if index < len(uvs) - 1 else ""
-            f.write(f"        {Formatters.vec2(uv)}{suffix}\n")
-        f.write("    }\n")
+    def _write_debug_helpers(f: TextIO, scene_data: SceneExportData) -> None:
+        if not scene_data.export_options.emit_debug_helpers:
+            return
 
-    @staticmethod
-    def _write_face_indices(f: TextIO, faces: Sequence[Face3]) -> None:
-        f.write(f"    face_indices {{ {len(faces)},\n")
-        for index, face in enumerate(faces):
-            suffix = "," if index < len(faces) - 1 else ""
-            f.write(f"        <{face[0]}, {face[1]}, {face[2]}>{suffix}\n")
-        f.write("    }\n")
+        wrote_any = False
 
-    @staticmethod
-    def _write_normal_indices(f: TextIO, normal_indices: Sequence[Face3]) -> None:
-        f.write(f"    normal_indices {{ {len(normal_indices)},\n")
-        for index, face in enumerate(normal_indices):
-            suffix = "," if index < len(normal_indices) - 1 else ""
-            f.write(f"        <{face[0]}, {face[1]}, {face[2]}>{suffix}\n")
-        f.write("    }\n")
+        for record in scene_data.object_records:
+            object_mesh_data = record.object_mesh_data
+            if object_mesh_data is None:
+                continue
 
-    @staticmethod
-    def _write_uv_indices(f: TextIO, uv_indices: Sequence[Face3]) -> None:
-        f.write(f"    uv_indices {{ {len(uv_indices)},\n")
-        for index, face in enumerate(uv_indices):
-            suffix = "," if index < len(uv_indices) - 1 else ""
-            f.write(f"        <{face[0]}, {face[1]}, {face[2]}>{suffix}\n")
-        f.write("    }\n")
+            if not object_mesh_data.uvs or not object_mesh_data.uv_indices:
+                continue
+
+            if not wrote_any:
+                f.write("// ------------------------------------------------------------\n")
+                f.write("// Built-in UV debug helpers\n")
+                f.write("// ------------------------------------------------------------\n")
+                f.write("// Usage examples:\n")
+                f.write("//\n")
+                f.write("// object {\n")
+                f.write("//     OBJ_Name_OBJECT\n")
+                f.write("//     texture { OBJ_Name_UV_DEBUG_TEXTURE }\n")
+                f.write("// }\n")
+                f.write("//\n")
+                f.write("// object {\n")
+                f.write('//     OBJ_Name_OBJECT\n')
+                f.write('//     texture { OBJ_Name_UV_IMAGE_TEXTURE("uv_debug.png") }\n')
+                f.write("// }\n")
+                f.write("//\n")
+                wrote_any = True
+
+            DebugMaterialWriter.write_debug_block_for_name(f, record.export_name)
+            f.write("\n")
 
 
 class DebugMaterialWriter:
     @staticmethod
     def write_debug_block(f: TextIO, mesh_data: MeshData) -> None:
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Built-in UV debug helpers\n")
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Usage examples:\n")
-        f.write("//\n")
-        f.write("// 1) UV gradient debug:\n")
-        f.write(
-            f"// object {{ {mesh_data.export_name} texture {{ {mesh_data.export_name}_UV_DEBUG_TEXTURE }} }}\n"
-        )
-        f.write("//\n")
-        f.write("// 2) UV image debug:\n")
-        f.write('// Replace "uv_debug.png" with your image file.\n')
-        f.write(
-            f'// object {{ {mesh_data.export_name} texture {{ {mesh_data.export_name}_UV_IMAGE_TEXTURE("uv_debug.png") }} }}\n'
-        )
-        f.write("//\n")
+        DebugMaterialWriter.write_debug_block_for_name(f, mesh_data.export_name)
 
-        f.write(f"#declare {mesh_data.export_name}_UV_DEBUG_TEXTURE =\n")
+    @staticmethod
+    def write_debug_block_for_name(f: TextIO, export_name: str) -> None:
+        f.write(f"#declare {export_name}_UV_DEBUG_TEXTURE =\n")
         f.write("texture {\n")
         f.write("    uv_mapping\n")
         f.write("    pigment {\n")
@@ -468,7 +582,7 @@ class DebugMaterialWriter:
         f.write("    }\n")
         f.write("}\n\n")
 
-        f.write(f"#macro {mesh_data.export_name}_UV_IMAGE_TEXTURE(ImageFile)\n")
+        f.write(f"#macro {export_name}_UV_IMAGE_TEXTURE(ImageFile)\n")
         f.write("texture {\n")
         f.write("    uv_mapping\n")
         f.write("    pigment {\n")
@@ -507,6 +621,10 @@ class NamePolicy:
         return "OBJ_mesh"
 
     @staticmethod
+    def make_object_export_name(source_name: str) -> str:
+        return NamePolicy.make_pov_identifier(source_name)
+
+    @staticmethod
     def make_pov_identifier(name: str) -> str:
         cleaned = re.sub(r"\W+", "_", name, flags=re.UNICODE)
         cleaned = cleaned.strip("_")
@@ -518,21 +636,3 @@ class NamePolicy:
             cleaned = f"_{cleaned}"
 
         return f"OBJ_{cleaned}"
-
-
-class Formatters:
-    @staticmethod
-    def vec2(vec: Vec2) -> str:
-        return f"<{Formatters.float(vec[0])}, {Formatters.float(vec[1])}>"
-
-    @staticmethod
-    def vec3(vec: Vec3) -> str:
-        return (
-            f"<{Formatters.float(vec[0])}, "
-            f"{Formatters.float(vec[1])}, "
-            f"{Formatters.float(vec[2])}>"
-        )
-
-    @staticmethod
-    def float(value: float) -> str:
-        return f"{float(value):.9g}"
