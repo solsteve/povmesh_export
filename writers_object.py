@@ -13,8 +13,8 @@ class ObjectSceneWriter:
     -------------
     - references per-object mesh declarations
     - emits matrix transforms
+    - attaches minimal exported materials when available
     - does not place live objects into the scene
-    - does not yet attach exported materials
     """
 
     @staticmethod
@@ -32,6 +32,9 @@ class ObjectSceneWriter:
             f.write(f"#declare {object_decl_name} = object {{\n")
             f.write(f"    {record.export_name}\n")
 
+            if record.material_data is not None:
+                f.write(f"    texture {{ {record.material_data.export_name} }}\n")
+
             if record.transform_data is not None and not record.transform_data.is_identity:
                 ObjectSceneWriter._write_matrix_transform(f, record.transform_data)
 
@@ -43,8 +46,6 @@ class ObjectSceneWriter:
         if matrix_rows is None:
             return
 
-        # POV-Ray matrix syntax:
-        # matrix <a,b,c, d,e,f, g,h,i, tx,ty,tz>
         a = matrix_rows[0][0]
         b = matrix_rows[1][0]
         c = matrix_rows[2][0]
@@ -75,4 +76,3 @@ class ObjectFormatters:
     @staticmethod
     def float(value: float) -> str:
         return f"{float(value):.9g}"
-    

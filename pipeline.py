@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import List, Sequence, TextIO
+from .material_extractor import MaterialExtractor
+from .writers_material import MaterialWriter
 
 from .coordinate_policy import CoordinatePolicy
 from .export_types import (
@@ -227,6 +229,14 @@ class MeshExtractor:
                 continue
 
             source_names.append(obj.name)
+
+            material_data = None
+            if export_options.export_materials:
+                material_data = MaterialExtractor.extract_material_data(
+                    obj,
+                    NamePolicy.make_object_export_name(obj.name),
+                )
+
             object_records.append(
                 ObjectExportRecord(
                     source_name=obj.name,
@@ -234,7 +244,7 @@ class MeshExtractor:
                     mesh_data=None,
                     object_mesh_data=object_mesh_data,
                     transform_data=transform_data,
-                    material_data=None,
+                    material_data=material_data,
                 )
             )
 
@@ -249,6 +259,7 @@ class MeshExtractor:
             source_names=source_names,
         )
 
+    
     @staticmethod
     def _extract_single_object_mesh(context, obj, export_options: ExportOptions) -> ObjectMeshData:
         depsgraph = context.evaluated_depsgraph_get()
@@ -482,6 +493,8 @@ class SceneWriter:
             SceneWriter._write_header(f, scene_data)
             SceneWriter._write_mesh_declarations(f, scene_data)
             f.write("\n")
+            SceneWriter._write_material_declarations(f, scene_data)
+            f.write("\n")
             SceneWriter._write_debug_helpers(f, scene_data)
             f.write("\n")
             ObjectSceneWriter.write_object_declarations(f, scene_data)
@@ -520,6 +533,15 @@ class SceneWriter:
             f.write("\n")
 
     @staticmethod
+    def _write_material_declarations(f: TextIO, scene_data: SceneExportData) -> None:
+        materials = [
+            record.material_data
+            for record in scene_data.object_records
+            if record.material_data is not None
+        ]
+        MaterialWriter.write_material_declarations(f, materials)
+
+    @staticmethod
     def _write_debug_helpers(f: TextIO, scene_data: SceneExportData) -> None:
         if not scene_data.export_options.emit_debug_helpers:
             return
@@ -546,11 +568,9 @@ class SceneWriter:
                 f.write("// }\n")
                 f.write("//\n")
                 f.write("// object {\n")
-                f.write('//     OBJ_Name_OBJECT\n')
-                f.write('//     texture { OBJ_Name_UV_IMAGE_TEXTURE("uv_debug.png") }\n')
-                f.write("// }\n")
-                f.write("//\n")
-                wrote_any = True
+                f.write("//     OBJ_Name_OBJECT\n")
+                f.write('//     texture { OBJ_Name_UV_IMAGE_TEXTURE("/absolute/path/to/uv_debug.png") }\n')
+                f.write("// }\n")                wrote_any = True
 
             DebugMaterialWriter.write_debug_block_for_name(f, record.export_name)
             f.write("\n")
@@ -603,7 +623,7 @@ class DebugMaterialWriter:
         f.write("}\n")
         f.write("#end\n")
 
-
+        
 class FileWriter:
     @staticmethod
     def ensure_parent_dir(filepath: Path) -> None:
