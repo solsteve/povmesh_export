@@ -87,9 +87,20 @@ def export_povmesh(
             export_ctx,
             export_options,
         )
+        material_data = MeshExtractor.extract_baked_material_data(
+            objects,
+            mesh_data.export_name,
+            export_options,
+        )
 
         FileWriter.ensure_parent_dir(export_ctx.filepath)
-        Mesh2Writer.write_file(export_ctx.filepath, mesh_data, export_options)
+        Mesh2Writer.write_file(
+            export_ctx.filepath,
+            mesh_data,
+            export_options,
+            material_data=material_data,
+            source_object_count=len(objects),
+        )
 
         print(
             "[povmesh_export] Exported "
@@ -199,6 +210,7 @@ class MeshExtractor:
             uv_indices=combined_uv_indices,
         )
 
+
     @staticmethod
     def extract_scene_data_for_transform_export(
         context,
@@ -259,7 +271,7 @@ class MeshExtractor:
             source_names=source_names,
         )
 
-    
+
     @staticmethod
     def _extract_single_object_mesh(context, obj, export_options: ExportOptions) -> ObjectMeshData:
         depsgraph = context.evaluated_depsgraph_get()
@@ -289,6 +301,26 @@ class MeshExtractor:
         finally:
             if mesh_eval is not None:
                 obj_eval.to_mesh_clear()
+
+
+    @staticmethod
+    def extract_baked_material_data(objects, combined_export_name: str, export_options: ExportOptions):
+        """
+        Minimal baked-mode material policy.
+
+        Current rule:
+        - if material export is disabled, return None
+        - if exactly one source object is being exported, extract that object's material
+        - if multiple objects are combined, do not attempt merged material export yet
+        """
+        if not export_options.export_materials:
+            return None
+
+        if len(objects) != 1:
+            return None
+
+        obj = objects[0]
+        return MaterialExtractor.extract_material_data(obj, combined_export_name)
 
 
 class ExpandedCornerBuilder:
@@ -433,15 +465,36 @@ class Mesh2Writer:
         filepath: Path,
         mesh_data: MeshData,
         export_options: ExportOptions,
+        material_data=None,
+        source_object_count: int = 1,
     ) -> None:
         with open(filepath, "w", encoding="utf-8", newline="\n") as f:
-            Mesh2Writer._write_header(f, mesh_data, export_options)
+            Mesh2Writer._write_header(
+                f,
+                mesh_data,
+                export_options,
+                material_data=material_data,
+                source_object_count=source_object_count,
+            )
             MeshDeclarationWriter.write_mesh_declaration(
                 f,
                 mesh_data.export_name,
                 mesh_data,
             )
             f.write("\n")
+
+            if material_data is not None:
+                MaterialWriter.write_material_declarations(f, [material_data])
+                f.write("\n")
+                Mesh2Writer._write_object_declaration(f, mesh_data, material_data)
+                f.write("\n")
+            elif export_options.export_materials and source_object_count > 1:
+                f.write("// ------------------------------------------------------------\n")
+                f.write("// Material declarations\n")
+                f.write("// ------------------------------------------------------------\n")
+                f.write("// Material export skipped for baked combined export with multiple objects.\n")
+                f.write("// Multi-object combined material assignment is not implemented yet.\n\n")
+
             if export_options.emit_debug_helpers:
                 DebugMaterialWriter.write_debug_block(f, mesh_data)
 
@@ -450,6 +503,8 @@ class Mesh2Writer:
         f: TextIO,
         mesh_data: MeshData,
         export_options: ExportOptions,
+        material_data=None,
+        source_object_count: int = 1,
     ) -> None:
         policy_info = CoordinatePolicy.get_info(export_options.coordinate_mode)
 
@@ -472,6 +527,16 @@ class Mesh2Writer:
         f.write(f"// Coordinate policy: {policy_info.short_label}\n")
         f.write(f"// Coordinate policy detail: {policy_info.description}\n")
 
+        if export_options.export_materials:
+            if material_data is not None:
+                f.write("// Material policy: single-object minimal material export enabled\n")
+            elif source_object_count > 1:
+                f.write("// Material policy: requested, but skipped for multi-object combined export\n")
+            else:
+                f.write("// Material policy: requested, but no supported material found\n")
+        else:
+            f.write("// Material policy: disabled\n")
+
         if mesh_data.uvs and mesh_data.uv_indices:
             f.write("// UV policy: active render UV map exported per triangle corner\n")
             f.write(
@@ -484,6 +549,16 @@ class Mesh2Writer:
         for name in mesh_data.source_names:
             f.write(f"//   - {name}\n")
         f.write("\n")
+
+    @staticmethod
+    def _write_object_declaration(f: TextIO, mesh_data: MeshData, material_data) -> None:
+        f.write("// ------------------------------------------------------------\n")
+        f.write("// Object declarations\n")
+        f.write("// ------------------------------------------------------------\n")
+        f.write(f"#declare {mesh_data.export_name}_OBJECT = object {{\n")
+        f.write(f"    {mesh_data.export_name}\n")
+        f.write(f"    texture {{ {material_data.export_name} }}\n")
+        f.write("}\n")
 
 
 class SceneWriter:
@@ -562,17 +637,40 @@ class SceneWriter:
                 f.write("// ------------------------------------------------------------\n")
                 f.write("// Usage examples:\n")
                 f.write("//\n")
+                f.write("// Generic gradient helper:\n")
                 f.write("// object {\n")
                 f.write("//     OBJ_Name_OBJECT\n")
                 f.write("//     texture { OBJ_Name_UV_DEBUG_TEXTURE }\n")
                 f.write("// }\n")
                 f.write("//\n")
+                f.write("// Generic image helper with explicit path:\n")
                 f.write("// object {\n")
                 f.write("//     OBJ_Name_OBJECT\n")
                 f.write('//     texture { OBJ_Name_UV_IMAGE_TEXTURE("/absolute/path/to/uv_debug.png") }\n')
-                f.write("// }\n")                wrote_any = True
+                f.write("// }\n")
+                f.write("//\n")
+                f.write("// Automatic resolved-image helper, when available:\n")
+                f.write("// object {\n")
+                f.write("//     OBJ_Name_OBJECT\n")
+                f.write("//     texture { OBJ_Name_UV_IMAGE_TEXTURE_AUTO }\n")
+                f.write("// }\n")
+                f.write("//\n")
+                wrote_any = True
 
-            DebugMaterialWriter.write_debug_block_for_name(f, record.export_name)
+            auto_image_path = None
+            if record.material_data is not None and record.material_data.image_texture is not None:
+                image_data = record.material_data.image_texture
+                auto_image_path = (
+                    image_data.filepath_resolved
+                    or image_data.filepath_raw
+                    or image_data.image_name
+                )
+
+            DebugMaterialWriter.write_debug_block_for_name(
+                f,
+                record.export_name,
+                auto_image_path=auto_image_path,
+            )
             f.write("\n")
 
 
@@ -582,7 +680,11 @@ class DebugMaterialWriter:
         DebugMaterialWriter.write_debug_block_for_name(f, mesh_data.export_name)
 
     @staticmethod
-    def write_debug_block_for_name(f: TextIO, export_name: str) -> None:
+    def write_debug_block_for_name(
+        f: TextIO,
+        export_name: str,
+        auto_image_path: str | None = None,
+    ) -> None:
         f.write(f"#declare {export_name}_UV_DEBUG_TEXTURE =\n")
         f.write("texture {\n")
         f.write("    uv_mapping\n")
@@ -623,7 +725,58 @@ class DebugMaterialWriter:
         f.write("}\n")
         f.write("#end\n")
 
-        
+        if auto_image_path:
+            escaped_path = DebugMaterialWriter._escape_pov_string(auto_image_path)
+            image_type = DebugMaterialWriter._image_map_type_token(auto_image_path)
+
+            f.write("\n")
+            f.write(f"#declare {export_name}_UV_IMAGE_TEXTURE_AUTO = texture {{\n")
+            f.write("    uv_mapping\n")
+            f.write("    pigment {\n")
+            f.write("        image_map {\n")
+            f.write(f'            {image_type} "{escaped_path}"\n')
+            f.write("            once\n")
+            f.write("        }\n")
+            f.write("        scale <1, -1, 1>\n")
+            f.write("        rotate <0, 0, 180>\n")
+            f.write("        translate <1, 0, 1>\n")
+            f.write("    }\n")
+            f.write("    finish {\n")
+            f.write("        ambient 1\n")
+            f.write("        diffuse 0\n")
+            f.write("        specular 0\n")
+            f.write("        roughness 1\n")
+            f.write("    }\n")
+            f.write("}\n")
+
+    @staticmethod
+    def _escape_pov_string(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _image_map_type_token(path_str: str) -> str:
+        lower = path_str.lower()
+        if lower.endswith(".png"):
+            return "png"
+        if lower.endswith(".jpg") or lower.endswith(".jpeg"):
+            return "jpeg"
+        if lower.endswith(".tga"):
+            return "tga"
+        if lower.endswith(".bmp"):
+            return "bmp"
+        if lower.endswith(".gif"):
+            return "gif"
+        if lower.endswith(".iff"):
+            return "iff"
+        if lower.endswith(".ppm") or lower.endswith(".pgm"):
+            return "ppm"
+        if lower.endswith(".tiff") or lower.endswith(".tif"):
+            return "tiff"
+        if lower.endswith(".exr"):
+            return "exr"
+        return "png"
+
+
 class FileWriter:
     @staticmethod
     def ensure_parent_dir(filepath: Path) -> None:

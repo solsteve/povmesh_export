@@ -58,13 +58,13 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
                 "Apply the exporter coordinate conversion policy for POV-Ray space",
             ),
         ),
-        default="BLENDER_NATIVE",
+        default="BLENDER_TO_POV",
     )
 
     export_materials: BoolProperty(
         name="Export Materials",
-        description="Reserved for Phase 2 material export",
-        default=False,
+        description="Export minimal supported materials",
+        default=True,
     )
 
     emit_debug_helpers: BoolProperty(
@@ -188,3 +188,4 @@ def unregister():
 
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    

@@ -69,6 +69,7 @@ class MaterialWriter:
         f.write("    }\n")
         f.write("}\n")
 
+
     @staticmethod
     def _write_image_texture_material(f: TextIO, material: MaterialData) -> None:
         image = material.image_texture
