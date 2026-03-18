@@ -469,13 +469,15 @@ class Mesh2Writer:
         source_object_count: int = 1,
     ) -> None:
         with open(filepath, "w", encoding="utf-8", newline="\n") as f:
-            Mesh2Writer._write_header(
-                f,
-                mesh_data,
-                export_options,
-                material_data=material_data,
-                source_object_count=source_object_count,
-            )
+            if export_options.include_comments:
+                Mesh2Writer._write_header(
+                    f,
+                    mesh_data,
+                    export_options,
+                    material_data=material_data,
+                    source_object_count=source_object_count,
+                )
+
             MeshDeclarationWriter.write_mesh_declaration(
                 f,
                 mesh_data.export_name,
@@ -484,11 +486,24 @@ class Mesh2Writer:
             f.write("\n")
 
             if material_data is not None:
-                MaterialWriter.write_material_declarations(f, [material_data])
+                MaterialWriter.write_material_declarations(
+                    f,
+                    [material_data],
+                    include_comments=export_options.include_comments,
+                )
                 f.write("\n")
-                Mesh2Writer._write_object_declaration(f, mesh_data, material_data)
+                Mesh2Writer._write_object_declaration(
+                    f,
+                    mesh_data,
+                    material_data,
+                    include_comments=export_options.include_comments,
+                )
                 f.write("\n")
-            elif export_options.export_materials and source_object_count > 1:
+            elif (
+                export_options.include_comments
+                and export_options.export_materials
+                and source_object_count > 1
+            ):
                 f.write("// ------------------------------------------------------------\n")
                 f.write("// Material declarations\n")
                 f.write("// ------------------------------------------------------------\n")
@@ -496,7 +511,12 @@ class Mesh2Writer:
                 f.write("// Multi-object combined material assignment is not implemented yet.\n\n")
 
             if export_options.emit_debug_helpers:
-                DebugMaterialWriter.write_debug_block(f, mesh_data)
+                DebugMaterialWriter.write_debug_block(
+                    f,
+                    mesh_data,
+                    include_comments=export_options.include_comments,
+                )
+
 
     @staticmethod
     def _write_header(
@@ -548,13 +568,37 @@ class Mesh2Writer:
         f.write("// Source objects:\n")
         for name in mesh_data.source_names:
             f.write(f"//   - {name}\n")
+
+        f.write("// Mesh declarations:\n")
+        f.write(f"//   - {mesh_data.export_name}\n")
+
+        f.write("// Material declarations:\n")
+        if material_data is not None:
+            f.write(f"//   - {material_data.export_name}\n")
+        else:
+            f.write("//   - (none)\n")
+
+        f.write("// Object wrappers:\n")
+        if material_data is not None:
+            f.write(f"//   - {mesh_data.export_name}_OBJECT\n")
+        else:
+            f.write("//   - (none)\n")
+
         f.write("\n")
 
+
     @staticmethod
-    def _write_object_declaration(f: TextIO, mesh_data: MeshData, material_data) -> None:
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Object declarations\n")
-        f.write("// ------------------------------------------------------------\n")
+    def _write_object_declaration(
+        f: TextIO,
+        mesh_data: MeshData,
+        material_data,
+        include_comments: bool = True,
+    ) -> None:
+        if include_comments:
+            f.write("// ------------------------------------------------------------\n")
+            f.write("// Object declarations\n")
+            f.write("// ------------------------------------------------------------\n")
+
         f.write(f"#declare {mesh_data.export_name}_OBJECT = object {{\n")
         f.write(f"    {mesh_data.export_name}\n")
         f.write(f"    texture {{ {material_data.export_name} }}\n")
@@ -565,14 +609,32 @@ class SceneWriter:
     @staticmethod
     def write_scene_file(filepath: Path, scene_data: SceneExportData) -> None:
         with open(filepath, "w", encoding="utf-8", newline="\n") as f:
-            SceneWriter._write_header(f, scene_data)
-            SceneWriter._write_mesh_declarations(f, scene_data)
+            if scene_data.export_options.include_comments:
+                SceneWriter._write_header(f, scene_data)
+
+            SceneWriter._write_mesh_declarations(
+                f,
+                scene_data,
+                include_comments=scene_data.export_options.include_comments,
+            )
             f.write("\n")
-            SceneWriter._write_material_declarations(f, scene_data)
+
+            SceneWriter._write_material_declarations(
+                f,
+                scene_data,
+                include_comments=scene_data.export_options.include_comments,
+            )
             f.write("\n")
+
             SceneWriter._write_debug_helpers(f, scene_data)
             f.write("\n")
-            ObjectSceneWriter.write_object_declarations(f, scene_data)
+
+            ObjectSceneWriter.write_object_declarations(
+                f,
+                scene_data,
+                include_comments=scene_data.export_options.include_comments,
+            )
+
 
     @staticmethod
     def _write_header(f: TextIO, scene_data: SceneExportData) -> None:
@@ -586,16 +648,57 @@ class SceneWriter:
         f.write("// Normal policy: object-local vertex normals\n")
         f.write(f"// Coordinate policy: {policy_info.short_label}\n")
         f.write(f"// Coordinate policy detail: {policy_info.description}\n")
+
+        if scene_data.export_options.export_materials:
+            f.write("// Material policy: per-object minimal material export enabled\n")
+        else:
+            f.write("// Material policy: disabled\n")
+
         f.write("// Source objects:\n")
         for name in scene_data.source_names:
             f.write(f"//   - {name}\n")
+
+        f.write("// Mesh declarations:\n")
+        wrote_mesh = False
+        for record in scene_data.object_records:
+            if record.object_mesh_data is not None:
+                f.write(f"//   - {record.export_name}\n")
+                wrote_mesh = True
+        if not wrote_mesh:
+            f.write("//   - (none)\n")
+
+        f.write("// Material declarations:\n")
+        wrote_material = False
+        for record in scene_data.object_records:
+            if record.material_data is not None:
+                f.write(f"//   - {record.material_data.export_name}\n")
+                wrote_material = True
+        if not wrote_material:
+            f.write("//   - (none)\n")
+
+        f.write("// Object wrappers:\n")
+        wrote_wrapper = False
+        for record in scene_data.object_records:
+            if record.object_mesh_data is not None:
+                f.write(f"//   - {record.export_name}_OBJECT\n")
+                wrote_wrapper = True
+        if not wrote_wrapper:
+            f.write("//   - (none)\n")
+
         f.write("\n")
 
+
     @staticmethod
-    def _write_mesh_declarations(f: TextIO, scene_data: SceneExportData) -> None:
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Mesh declarations\n")
-        f.write("// ------------------------------------------------------------\n")
+    def _write_mesh_declarations(
+        f: TextIO,
+        scene_data: SceneExportData,
+        include_comments: bool = True,
+    ) -> None:
+        if include_comments:
+            f.write("// ------------------------------------------------------------\n")
+            f.write("// Mesh declarations\n")
+            f.write("// ------------------------------------------------------------\n")
+
         for record in scene_data.object_records:
             if record.object_mesh_data is None:
                 continue
@@ -607,14 +710,24 @@ class SceneWriter:
             )
             f.write("\n")
 
+
     @staticmethod
-    def _write_material_declarations(f: TextIO, scene_data: SceneExportData) -> None:
+    def _write_material_declarations(
+        f: TextIO,
+        scene_data: SceneExportData,
+        include_comments: bool = True,
+    ) -> None:
         materials = [
             record.material_data
             for record in scene_data.object_records
             if record.material_data is not None
         ]
-        MaterialWriter.write_material_declarations(f, materials)
+        MaterialWriter.write_material_declarations(
+            f,
+            materials,
+            include_comments=include_comments,
+        )
+
 
     @staticmethod
     def _write_debug_helpers(f: TextIO, scene_data: SceneExportData) -> None:
@@ -631,7 +744,7 @@ class SceneWriter:
             if not object_mesh_data.uvs or not object_mesh_data.uv_indices:
                 continue
 
-            if not wrote_any:
+            if not wrote_any and scene_data.export_options.include_comments:
                 f.write("// ------------------------------------------------------------\n")
                 f.write("// Built-in UV debug helpers\n")
                 f.write("// ------------------------------------------------------------\n")
@@ -670,20 +783,30 @@ class SceneWriter:
                 f,
                 record.export_name,
                 auto_image_path=auto_image_path,
+                include_comments=scene_data.export_options.include_comments,
             )
             f.write("\n")
 
 
 class DebugMaterialWriter:
     @staticmethod
-    def write_debug_block(f: TextIO, mesh_data: MeshData) -> None:
-        DebugMaterialWriter.write_debug_block_for_name(f, mesh_data.export_name)
+    def write_debug_block(
+        f: TextIO,
+        mesh_data: MeshData,
+        include_comments: bool = True,
+    ) -> None:
+        DebugMaterialWriter.write_debug_block_for_name(
+            f,
+            mesh_data.export_name,
+            include_comments=include_comments,
+        )
 
     @staticmethod
     def write_debug_block_for_name(
         f: TextIO,
         export_name: str,
         auto_image_path: str | None = None,
+        include_comments: bool = True,
     ) -> None:
         f.write(f"#declare {export_name}_UV_DEBUG_TEXTURE =\n")
         f.write("texture {\n")

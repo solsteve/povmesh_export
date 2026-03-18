@@ -22,24 +22,41 @@ class MaterialWriter:
     """
 
     @staticmethod
-    def write_material_declarations(f: TextIO, material_records: Iterable[MaterialData]) -> None:
+    def write_material_declarations(
+        f: TextIO,
+        material_records: Iterable[MaterialData],
+        include_comments: bool = True,
+    ) -> None:
         material_list = [mat for mat in material_records if mat is not None]
 
         if not material_list:
             return
 
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Material declarations\n")
-        f.write("// ------------------------------------------------------------\n")
+        if include_comments:
+            f.write("// ------------------------------------------------------------\n")
+            f.write("// Material declarations\n")
+            f.write("// ------------------------------------------------------------\n")
 
         for material in material_list:
-            MaterialWriter.write_material_declaration(f, material)
+            MaterialWriter.write_material_declaration(
+                f,
+                material,
+                include_comments=include_comments,
+            )
             f.write("\n")
 
     @staticmethod
-    def write_material_declaration(f: TextIO, material: MaterialData) -> None:
+    def write_material_declaration(
+        f: TextIO,
+        material: MaterialData,
+        include_comments: bool = True,
+    ) -> None:
         if not material.is_supported:
-            MaterialWriter._write_fallback_material(f, material)
+            MaterialWriter._write_fallback_material(
+                f,
+                material,
+                include_comments=include_comments,
+            )
             return
 
         if material.image_texture is not None:
@@ -50,7 +67,11 @@ class MaterialWriter:
             MaterialWriter._write_solid_color_material(f, material)
             return
 
-        MaterialWriter._write_fallback_material(f, material)
+        MaterialWriter._write_fallback_material(
+            f,
+            material,
+            include_comments=include_comments,
+        )
 
     @staticmethod
     def _write_solid_color_material(f: TextIO, material: MaterialData) -> None:
@@ -62,13 +83,12 @@ class MaterialWriter:
         )
         f.write("    }\n")
         f.write("    finish {\n")
-        f.write("        ambient 0\n")
+        f.write("        ambient 1\n")
         f.write("        diffuse 0.8\n")
         f.write("        specular 0\n")
         f.write("        roughness 1\n")
         f.write("    }\n")
         f.write("}\n")
-
 
     @staticmethod
     def _write_image_texture_material(f: TextIO, material: MaterialData) -> None:
@@ -95,10 +115,13 @@ class MaterialWriter:
         f.write("    }\n")
         f.write("}\n")
 
-
     @staticmethod
-    def _write_fallback_material(f: TextIO, material: MaterialData) -> None:
-        if material.warning:
+    def _write_fallback_material(
+        f: TextIO,
+        material: MaterialData,
+        include_comments: bool = True,
+    ) -> None:
+        if include_comments and material.warning:
             f.write(f"// Material fallback for {material.source_name}: {material.warning}\n")
         f.write(f"#declare {material.export_name} = texture {{\n")
         f.write("    pigment {\n")

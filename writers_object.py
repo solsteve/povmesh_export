@@ -18,10 +18,15 @@ class ObjectSceneWriter:
     """
 
     @staticmethod
-    def write_object_declarations(f: TextIO, scene_data: SceneExportData) -> None:
-        f.write("// ------------------------------------------------------------\n")
-        f.write("// Object declarations\n")
-        f.write("// ------------------------------------------------------------\n")
+    def write_object_declarations(
+        f: TextIO,
+        scene_data: SceneExportData,
+        include_comments: bool = True,
+    ) -> None:
+        if include_comments:
+            f.write("// ------------------------------------------------------------\n")
+            f.write("// Object declarations\n")
+            f.write("// ------------------------------------------------------------\n")
 
         for record in scene_data.object_records:
             if record.object_mesh_data is None:

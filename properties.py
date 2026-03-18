@@ -22,7 +22,7 @@ class POVMeshExportProperties(PropertyGroup):
                 "Export object-local mesh data and emit a wrapper transform per object",
             ),
         ),
-        default="BAKE_WORLD",
+        default="EMIT_OBJECT_TRANSFORMS",
     )
 
     coordinate_mode: EnumProperty(
