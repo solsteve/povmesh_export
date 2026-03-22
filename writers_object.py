@@ -7,14 +7,15 @@ from .export_types import SceneExportData, TransformData
 
 class ObjectSceneWriter:
     """
-    Writes per-object POV-Ray wrapper object declarations for emitted-transform mode.
+    Writes per-part object declarations and one final assembled asset declaration.
 
-    Phase 2 scope
-    -------------
-    - references per-object mesh declarations
-    - emits matrix transforms
-    - attaches minimal exported materials when available
-    - does not place live objects into the scene
+    Rules
+    -----
+    - each exported part remains reusable individually
+    - each part is instantiated through a declared wrapper object
+    - the final asset is:
+        * object { PART_OBJECT }  when exactly one part exists
+        * union { object { PART_OBJECT } ... } when multiple parts exist
     """
 
     @staticmethod
@@ -25,7 +26,7 @@ class ObjectSceneWriter:
     ) -> None:
         if include_comments:
             f.write("// ------------------------------------------------------------\n")
-            f.write("// Object declarations\n")
+            f.write("// Part object declarations\n")
             f.write("// ------------------------------------------------------------\n")
 
         for record in scene_data.object_records:
@@ -44,6 +45,41 @@ class ObjectSceneWriter:
                 ObjectSceneWriter._write_matrix_transform(f, record.transform_data)
 
             f.write("}\n\n")
+
+    @staticmethod
+    def write_asset_declaration(
+        f: TextIO,
+        scene_data: SceneExportData,
+        include_comments: bool = True,
+    ) -> None:
+        part_records = [
+            record for record in scene_data.object_records
+            if record.object_mesh_data is not None
+        ]
+
+        if not part_records:
+            return
+
+        asset_name = scene_data.asset_export_name
+
+        if include_comments:
+            f.write("// ------------------------------------------------------------\n")
+            f.write("// Final asset declaration\n")
+            f.write("// ------------------------------------------------------------\n")
+
+        if len(part_records) == 1:
+            part = part_records[0]
+            f.write(f"#declare {asset_name} = object {{\n")
+            f.write(f"    {part.export_name}_OBJECT\n")
+            f.write("}\n")
+            return
+
+        f.write(f"#declare {asset_name} = union {{\n")
+        for part in part_records:
+            f.write("    object {\n")
+            f.write(f"        {part.export_name}_OBJECT\n")
+            f.write("    }\n")
+        f.write("}\n")
 
     @staticmethod
     def _write_matrix_transform(f: TextIO, transform_data: TransformData) -> None:

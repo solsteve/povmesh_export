@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Sequence, TextIO
-from .material_extractor import MaterialExtractor
-from .writers_material import MaterialWriter
+from typing import List, TextIO
 
 from .coordinate_policy import CoordinatePolicy
 from .export_types import (
+    CoordinateMode,
     ExportContext,
     ExportOptions,
-    CoordinateMode,
-    Face3,
-    MeshData,
+    MaterialData,
     ObjectExportRecord,
     ObjectMeshData,
     SceneExportData,
@@ -20,7 +17,9 @@ from .export_types import (
     Vec2,
     Vec3,
 )
+from .material_extractor import MaterialExtractor
 from .transform_extractor import TransformExtractor
+from .writers_material import MaterialWriter
 from .writers_mesh import MeshDeclarationWriter
 from .writers_object import ObjectSceneWriter
 
@@ -28,83 +27,52 @@ from .writers_object import ObjectSceneWriter
 class ExportError(Exception):
     """Raised for expected exporter failures that should be shown to the user."""
 
+
 def export_povmesh(
     context,
     filepath,
-    transform_mode="BAKE_WORLD",
-    coordinate_mode="BLENDER_NATIVE",
-    export_materials=False,
+    coordinate_mode="BLENDER_TO_POV",
+    export_materials=True,
     emit_debug_helpers=True,
-    combine_objects=True,
     include_comments=True,
 ):
     """
-    Export selected mesh objects to POV-Ray SDL.
+    Export selected Blender mesh objects as reusable POV-Ray parts plus one final asset.
 
-    Phase 2 transform split
-    -----------------------
-    BAKE_WORLD
-        - geometry is baked to world space
-        - output is a single combined mesh2 declaration
-
-    EMIT_OBJECT_TRANSFORMS
-        - geometry remains object-local
-        - one mesh declaration is emitted per object
-        - one object wrapper is emitted per object with a matrix transform
+    Export rules
+    ------------
+    - every selected mesh object exports as its own local-space mesh2 declaration
+    - every part may export one minimal material declaration
+    - every part gets a declared wrapper object with a matrix transform
+    - if one part exists, the final asset is a declared object wrapper
+    - if multiple parts exist, the final asset is a declared union
     """
     try:
         export_ctx = ExportContext(filepath=Path(filepath))
         export_options = ExportOptions(
-            transform_mode=TransformMode(transform_mode),
+            transform_mode=TransformMode.EMIT_OBJECT_TRANSFORMS,
             coordinate_mode=CoordinateMode(coordinate_mode),
             export_materials=bool(export_materials),
             emit_debug_helpers=bool(emit_debug_helpers),
-            combine_objects=bool(combine_objects),
+            combine_objects=False,
             include_comments=bool(include_comments),
         )
 
         objects = MeshCollector.get_selected_mesh_objects(context)
-
-        if TransformExtractor.uses_emitted_object_transforms(export_options):
-            scene_data = MeshExtractor.extract_scene_data_for_transform_export(
-                context,
-                objects,
-                export_ctx,
-                export_options,
-            )
-            FileWriter.ensure_parent_dir(export_ctx.filepath)
-            SceneWriter.write_scene_file(export_ctx.filepath, scene_data)
-            print(
-                "[povmesh_export] Exported "
-                f"{len(scene_data.source_names)} object(s) to '{export_ctx.filepath}' "
-                "using emitted object transforms"
-            )
-            return {"FINISHED"}
-
-        mesh_data = MeshExtractor.extract_combined_mesh(
-            context,
-            objects,
-            export_ctx,
-            export_options,
-        )
-        material_data = MeshExtractor.extract_baked_material_data(
-            objects,
-            mesh_data.export_name,
-            export_options,
+        scene_data = MeshExtractor.extract_scene_data_for_asset_export(
+            context=context,
+            objects=objects,
+            export_ctx=export_ctx,
+            export_options=export_options,
         )
 
         FileWriter.ensure_parent_dir(export_ctx.filepath)
-        Mesh2Writer.write_file(
-            export_ctx.filepath,
-            mesh_data,
-            export_options,
-            material_data=material_data,
-            source_object_count=len(objects),
-        )
+        SceneWriter.write_scene_file(export_ctx.filepath, scene_data)
 
         print(
             "[povmesh_export] Exported "
-            f"{len(mesh_data.source_names)} object(s) to '{export_ctx.filepath}' using baked world transforms"
+            f"{len(scene_data.source_names)} part(s) to '{export_ctx.filepath}' "
+            f"as asset '{scene_data.asset_export_name}'"
         )
         return {"FINISHED"}
 
@@ -136,101 +104,18 @@ class MeshCollector:
 
 class MeshExtractor:
     @staticmethod
-    def extract_combined_mesh(
-        context,
-        objects,
-        export_ctx: ExportContext,
-        export_options: ExportOptions,
-    ) -> MeshData:
-        """
-        Build the Phase 1-compatible combined mesh payload.
-
-        This path is only valid for baked world-transform export.
-        """
-        if export_options.transform_mode != TransformMode.BAKE_WORLD:
-            raise ExportError(
-                "Combined mesh export currently requires TransformMode.BAKE_WORLD."
-            )
-
-        combined_vertices: List[Vec3] = []
-        combined_faces: List[Face3] = []
-        combined_normals: List[Vec3] = []
-        combined_normal_indices: List[Face3] = []
-        combined_uvs: List[Vec2] = []
-        combined_uv_indices: List[Face3] = []
-        source_names: List[str] = []
-
-        for obj in objects:
-            obj_mesh = MeshExtractor._extract_single_object_mesh(
-                context,
-                obj,
-                export_options,
-            )
-
-            if not obj_mesh.faces:
-                continue
-
-            vertex_offset = len(combined_vertices)
-            uv_offset = len(combined_uvs)
-
-            combined_vertices.extend(obj_mesh.vertices)
-            combined_faces.extend(
-                FaceIndexBuilder.offset_faces(obj_mesh.faces, vertex_offset)
-            )
-
-            combined_normals.extend(obj_mesh.normals)
-            combined_normal_indices.extend(
-                FaceIndexBuilder.offset_faces(obj_mesh.normal_indices, vertex_offset)
-            )
-
-            if obj_mesh.uvs and obj_mesh.uv_indices:
-                combined_uvs.extend(obj_mesh.uvs)
-                combined_uv_indices.extend(
-                    FaceIndexBuilder.offset_faces(obj_mesh.uv_indices, uv_offset)
-                )
-
-            source_names.append(obj_mesh.source_name)
-
-        if not source_names:
-            raise ExportError("Selected mesh objects contained no exportable faces.")
-
-        export_name = NamePolicy.make_export_name(
-            export_ctx.filepath,
-            source_names,
-        )
-
-        return MeshData(
-            source_names=source_names,
-            export_name=export_name,
-            vertices=combined_vertices,
-            faces=combined_faces,
-            normals=combined_normals,
-            normal_indices=combined_normal_indices,
-            uvs=combined_uvs,
-            uv_indices=combined_uv_indices,
-        )
-
-
-    @staticmethod
-    def extract_scene_data_for_transform_export(
+    def extract_scene_data_for_asset_export(
         context,
         objects,
         export_ctx: ExportContext,
         export_options: ExportOptions,
     ) -> SceneExportData:
-        """
-        Build per-object scene export records for emitted-transform mode.
-        """
-        if export_options.transform_mode != TransformMode.EMIT_OBJECT_TRANSFORMS:
-            raise ExportError(
-                "Scene-data transform export path requires TransformMode.EMIT_OBJECT_TRANSFORMS."
-            )
+        source_names: List[str] = [obj.name for obj in objects]
+        asset_export_name = NamePolicy.make_export_name(export_ctx.filepath, source_names)
 
         object_records: List[ObjectExportRecord] = []
-        source_names: List[str] = []
 
         for obj in objects:
-            transform_data = TransformExtractor.extract_transform_data(obj, export_options)
             object_mesh_data = MeshExtractor._extract_single_object_mesh(
                 context,
                 obj,
@@ -240,19 +125,24 @@ class MeshExtractor:
             if not object_mesh_data.faces:
                 continue
 
-            source_names.append(obj.name)
+            part_export_name = NamePolicy.make_part_export_name(
+                asset_export_name,
+                obj.name,
+            )
+
+            transform_data = TransformExtractor.extract_transform_data(obj, export_options)
 
             material_data = None
             if export_options.export_materials:
                 material_data = MaterialExtractor.extract_material_data(
                     obj,
-                    NamePolicy.make_object_export_name(obj.name),
+                    part_export_name,
                 )
 
             object_records.append(
                 ObjectExportRecord(
                     source_name=obj.name,
-                    export_name=NamePolicy.make_object_export_name(obj.name),
+                    export_name=part_export_name,
                     mesh_data=None,
                     object_mesh_data=object_mesh_data,
                     transform_data=transform_data,
@@ -268,12 +158,16 @@ class MeshExtractor:
             export_options=export_options,
             object_records=object_records,
             combined_mesh_data=None,
-            source_names=source_names,
+            source_names=[record.source_name for record in object_records],
+            asset_export_name=asset_export_name,
         )
 
-
     @staticmethod
-    def _extract_single_object_mesh(context, obj, export_options: ExportOptions) -> ObjectMeshData:
+    def _extract_single_object_mesh(
+        context,
+        obj,
+        export_options: ExportOptions,
+    ) -> ObjectMeshData:
         depsgraph = context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
 
@@ -291,7 +185,6 @@ class MeshExtractor:
                 )
 
             mesh_eval.calc_loop_triangles()
-
             return ExpandedCornerBuilder.build_object_mesh_data(
                 obj,
                 mesh_eval,
@@ -303,41 +196,17 @@ class MeshExtractor:
                 obj_eval.to_mesh_clear()
 
 
-    @staticmethod
-    def extract_baked_material_data(objects, combined_export_name: str, export_options: ExportOptions):
-        """
-        Minimal baked-mode material policy.
-
-        Current rule:
-        - if material export is disabled, return None
-        - if exactly one source object is being exported, extract that object's material
-        - if multiple objects are combined, do not attempt merged material export yet
-        """
-        if not export_options.export_materials:
-            return None
-
-        if len(objects) != 1:
-            return None
-
-        obj = objects[0]
-        return MaterialExtractor.extract_material_data(obj, combined_export_name)
-
-
 class ExpandedCornerBuilder:
     @staticmethod
     def build_object_mesh_data(obj, mesh, export_options: ExportOptions) -> ObjectMeshData:
-        point_matrix, normal_matrix = TransformExtractor.get_geometry_matrices(
-            obj,
-            export_options,
-        )
         uv_layer = UVExtractor.get_active_render_uv_layer(mesh)
 
         vertices: List[Vec3] = []
-        faces: List[Face3] = []
+        faces: List[tuple[int, int, int]] = []
         normals: List[Vec3] = []
-        normal_indices: List[Face3] = []
+        normal_indices: List[tuple[int, int, int]] = []
         uvs: List[Vec2] = []
-        uv_indices: List[Face3] = []
+        uv_indices: List[tuple[int, int, int]] = []
 
         for tri in mesh.loop_triangles:
             if len(tri.loops) != 3:
@@ -352,25 +221,25 @@ class ExpandedCornerBuilder:
                 vertex_index = mesh.loops[loop_index].vertex_index
                 vert = mesh.vertices[vertex_index]
 
-                co_export_source = point_matrix @ vert.co
+                co_local = vert.co
                 co_export = CoordinatePolicy.convert_point(
                     (
-                        float(co_export_source.x),
-                        float(co_export_source.y),
-                        float(co_export_source.z),
+                        float(co_local.x),
+                        float(co_local.y),
+                        float(co_local.z),
                     ),
                     export_options.coordinate_mode,
                 )
                 vertices.append(co_export)
                 face_corner_indices.append(len(vertices) - 1)
 
-                normal_export_source = normal_matrix @ vert.normal
-                normal_export_source.normalize()
+                normal_local = vert.normal.copy()
+                normal_local.normalize()
                 normal_export = CoordinatePolicy.convert_normal(
                     (
-                        float(normal_export_source.x),
-                        float(normal_export_source.y),
-                        float(normal_export_source.z),
+                        float(normal_local.x),
+                        float(normal_local.y),
+                        float(normal_local.z),
                     ),
                     export_options.coordinate_mode,
                 )
@@ -378,19 +247,10 @@ class ExpandedCornerBuilder:
 
                 if uv_layer is not None:
                     uv = uv_layer.data[loop_index].uv
-
-                    # Flip U during export so users do not need
-                    # scale <-1, 1, 1> in POV-Ray texture blocks.
                     u = 1.0 - float(uv.x)
                     v = float(uv.y)
-
                     uvs.append((u, v))
                     uv_corner_indices.append(len(uvs) - 1)
-
-            if len(face_corner_indices) != 3:
-                raise ExportError(
-                    "Expanded corner export failed: expected 3 corners per triangle."
-                )
 
             face = (
                 face_corner_indices[0],
@@ -401,11 +261,6 @@ class ExpandedCornerBuilder:
             normal_indices.append(face)
 
             if uv_layer is not None:
-                if len(uv_corner_indices) != 3:
-                    raise ExportError(
-                        "UV extraction failed: expected 3 UV corners per triangle."
-                    )
-
                 uv_indices.append(
                     (
                         uv_corner_indices[0],
@@ -446,165 +301,6 @@ class UVExtractor:
         return None
 
 
-class FaceIndexBuilder:
-    @staticmethod
-    def offset_faces(faces: Sequence[Face3], index_offset: int) -> List[Face3]:
-        return [
-            (
-                face[0] + index_offset,
-                face[1] + index_offset,
-                face[2] + index_offset,
-            )
-            for face in faces
-        ]
-
-
-class Mesh2Writer:
-    @staticmethod
-    def write_file(
-        filepath: Path,
-        mesh_data: MeshData,
-        export_options: ExportOptions,
-        material_data=None,
-        source_object_count: int = 1,
-    ) -> None:
-        with open(filepath, "w", encoding="utf-8", newline="\n") as f:
-            if export_options.include_comments:
-                Mesh2Writer._write_header(
-                    f,
-                    mesh_data,
-                    export_options,
-                    material_data=material_data,
-                    source_object_count=source_object_count,
-                )
-
-            MeshDeclarationWriter.write_mesh_declaration(
-                f,
-                mesh_data.export_name,
-                mesh_data,
-            )
-            f.write("\n")
-
-            if material_data is not None:
-                MaterialWriter.write_material_declarations(
-                    f,
-                    [material_data],
-                    include_comments=export_options.include_comments,
-                )
-                f.write("\n")
-                Mesh2Writer._write_object_declaration(
-                    f,
-                    mesh_data,
-                    material_data,
-                    include_comments=export_options.include_comments,
-                )
-                f.write("\n")
-            elif (
-                export_options.include_comments
-                and export_options.export_materials
-                and source_object_count > 1
-            ):
-                f.write("// ------------------------------------------------------------\n")
-                f.write("// Material declarations\n")
-                f.write("// ------------------------------------------------------------\n")
-                f.write("// Material export skipped for baked combined export with multiple objects.\n")
-                f.write("// Multi-object combined material assignment is not implemented yet.\n\n")
-
-            if export_options.emit_debug_helpers:
-                DebugMaterialWriter.write_debug_block(
-                    f,
-                    mesh_data,
-                    include_comments=export_options.include_comments,
-                )
-
-
-    @staticmethod
-    def _write_header(
-        f: TextIO,
-        mesh_data: MeshData,
-        export_options: ExportOptions,
-        material_data=None,
-        source_object_count: int = 1,
-    ) -> None:
-        policy_info = CoordinatePolicy.get_info(export_options.coordinate_mode)
-
-        f.write("// POV-Ray mesh2 export\n")
-        f.write("// Generated by Blender add-on: POV-Ray Mesh2 Exporter\n")
-        f.write("// Export mode: combined selected mesh objects\n")
-        f.write("// Geometry policy: expanded per-triangle-corner export\n")
-
-        if export_options.transform_mode == TransformMode.BAKE_WORLD:
-            f.write(
-                "// Transform policy: each object's world transform baked into vertex positions\n"
-            )
-            f.write("// Normal policy: vertex normals transformed to world space\n")
-        else:
-            f.write(
-                "// Transform policy: object-local geometry with deferred wrapper transforms\n"
-            )
-            f.write("// Normal policy: object-local vertex normals\n")
-
-        f.write(f"// Coordinate policy: {policy_info.short_label}\n")
-        f.write(f"// Coordinate policy detail: {policy_info.description}\n")
-
-        if export_options.export_materials:
-            if material_data is not None:
-                f.write("// Material policy: single-object minimal material export enabled\n")
-            elif source_object_count > 1:
-                f.write("// Material policy: requested, but skipped for multi-object combined export\n")
-            else:
-                f.write("// Material policy: requested, but no supported material found\n")
-        else:
-            f.write("// Material policy: disabled\n")
-
-        if mesh_data.uvs and mesh_data.uv_indices:
-            f.write("// UV policy: active render UV map exported per triangle corner\n")
-            f.write(
-                "// UV convention: U flipped during export for direct POV-Ray image_map use\n"
-            )
-        else:
-            f.write("// UV policy: no active render UV map found\n")
-
-        f.write("// Source objects:\n")
-        for name in mesh_data.source_names:
-            f.write(f"//   - {name}\n")
-
-        f.write("// Mesh declarations:\n")
-        f.write(f"//   - {mesh_data.export_name}\n")
-
-        f.write("// Material declarations:\n")
-        if material_data is not None:
-            f.write(f"//   - {material_data.export_name}\n")
-        else:
-            f.write("//   - (none)\n")
-
-        f.write("// Object wrappers:\n")
-        if material_data is not None:
-            f.write(f"//   - {mesh_data.export_name}_OBJECT\n")
-        else:
-            f.write("//   - (none)\n")
-
-        f.write("\n")
-
-
-    @staticmethod
-    def _write_object_declaration(
-        f: TextIO,
-        mesh_data: MeshData,
-        material_data,
-        include_comments: bool = True,
-    ) -> None:
-        if include_comments:
-            f.write("// ------------------------------------------------------------\n")
-            f.write("// Object declarations\n")
-            f.write("// ------------------------------------------------------------\n")
-
-        f.write(f"#declare {mesh_data.export_name}_OBJECT = object {{\n")
-        f.write(f"    {mesh_data.export_name}\n")
-        f.write(f"    texture {{ {material_data.export_name} }}\n")
-        f.write("}\n")
-
-
 class SceneWriter:
     @staticmethod
     def write_scene_file(filepath: Path, scene_data: SceneExportData) -> None:
@@ -634,7 +330,13 @@ class SceneWriter:
                 scene_data,
                 include_comments=scene_data.export_options.include_comments,
             )
+            f.write("\n")
 
+            ObjectSceneWriter.write_asset_declaration(
+                f,
+                scene_data,
+                include_comments=scene_data.export_options.include_comments,
+            )
 
     @staticmethod
     def _write_header(f: TextIO, scene_data: SceneExportData) -> None:
@@ -642,15 +344,14 @@ class SceneWriter:
 
         f.write("// POV-Ray mesh2 export\n")
         f.write("// Generated by Blender add-on: POV-Ray Mesh2 Exporter\n")
-        f.write("// Export mode: per-object mesh declarations with emitted object transforms\n")
-        f.write("// Geometry policy: expanded per-triangle-corner export\n")
-        f.write("// Transform policy: object-local geometry with wrapper transforms emitted in SDL\n")
-        f.write("// Normal policy: object-local vertex normals\n")
+        f.write("// Export mode: per-part local-space declarations with assembled asset output\n")
+        f.write("// Geometry policy: each selected Blender mesh object exports in local coordinates\n")
+        f.write("// Transform policy: part wrapper matrices are derived from Blender world transforms\n")
         f.write(f"// Coordinate policy: {policy_info.short_label}\n")
         f.write(f"// Coordinate policy detail: {policy_info.description}\n")
 
         if scene_data.export_options.export_materials:
-            f.write("// Material policy: per-object minimal material export enabled\n")
+            f.write("// Material policy: per-part minimal material export enabled\n")
         else:
             f.write("// Material policy: disabled\n")
 
@@ -659,13 +360,9 @@ class SceneWriter:
             f.write(f"//   - {name}\n")
 
         f.write("// Mesh declarations:\n")
-        wrote_mesh = False
         for record in scene_data.object_records:
             if record.object_mesh_data is not None:
                 f.write(f"//   - {record.export_name}\n")
-                wrote_mesh = True
-        if not wrote_mesh:
-            f.write("//   - (none)\n")
 
         f.write("// Material declarations:\n")
         wrote_material = False
@@ -676,17 +373,14 @@ class SceneWriter:
         if not wrote_material:
             f.write("//   - (none)\n")
 
-        f.write("// Object wrappers:\n")
-        wrote_wrapper = False
+        f.write("// Part object wrappers:\n")
         for record in scene_data.object_records:
             if record.object_mesh_data is not None:
                 f.write(f"//   - {record.export_name}_OBJECT\n")
-                wrote_wrapper = True
-        if not wrote_wrapper:
-            f.write("//   - (none)\n")
 
+        f.write("// Final asset declaration:\n")
+        f.write(f"//   - {scene_data.asset_export_name}\n")
         f.write("\n")
-
 
     @staticmethod
     def _write_mesh_declarations(
@@ -710,14 +404,13 @@ class SceneWriter:
             )
             f.write("\n")
 
-
     @staticmethod
     def _write_material_declarations(
         f: TextIO,
         scene_data: SceneExportData,
         include_comments: bool = True,
     ) -> None:
-        materials = [
+        materials: list[MaterialData] = [
             record.material_data
             for record in scene_data.object_records
             if record.material_data is not None
@@ -727,7 +420,6 @@ class SceneWriter:
             materials,
             include_comments=include_comments,
         )
-
 
     @staticmethod
     def _write_debug_helpers(f: TextIO, scene_data: SceneExportData) -> None:
@@ -750,22 +442,19 @@ class SceneWriter:
                 f.write("// ------------------------------------------------------------\n")
                 f.write("// Usage examples:\n")
                 f.write("//\n")
-                f.write("// Generic gradient helper:\n")
                 f.write("// object {\n")
-                f.write("//     OBJ_Name_OBJECT\n")
-                f.write("//     texture { OBJ_Name_UV_DEBUG_TEXTURE }\n")
+                f.write("//     OBJ_Part_OBJECT\n")
+                f.write("//     texture { OBJ_Part_UV_DEBUG_TEXTURE }\n")
                 f.write("// }\n")
                 f.write("//\n")
-                f.write("// Generic image helper with explicit path:\n")
                 f.write("// object {\n")
-                f.write("//     OBJ_Name_OBJECT\n")
-                f.write('//     texture { OBJ_Name_UV_IMAGE_TEXTURE("/absolute/path/to/uv_debug.png") }\n')
+                f.write("//     OBJ_Part_OBJECT\n")
+                f.write('//     texture { OBJ_Part_UV_IMAGE_TEXTURE("/absolute/path/to/uv_debug.png") }\n')
                 f.write("// }\n")
                 f.write("//\n")
-                f.write("// Automatic resolved-image helper, when available:\n")
                 f.write("// object {\n")
-                f.write("//     OBJ_Name_OBJECT\n")
-                f.write("//     texture { OBJ_Name_UV_IMAGE_TEXTURE_AUTO }\n")
+                f.write("//     OBJ_Part_OBJECT\n")
+                f.write("//     texture { OBJ_Part_UV_IMAGE_TEXTURE_AUTO }\n")
                 f.write("// }\n")
                 f.write("//\n")
                 wrote_any = True
@@ -792,7 +481,7 @@ class DebugMaterialWriter:
     @staticmethod
     def write_debug_block(
         f: TextIO,
-        mesh_data: MeshData,
+        mesh_data,
         include_comments: bool = True,
     ) -> None:
         DebugMaterialWriter.write_debug_block_for_name(
@@ -908,7 +597,7 @@ class FileWriter:
 
 class NamePolicy:
     @staticmethod
-    def make_export_name(filepath: Path, source_names: Sequence[str]) -> str:
+    def make_export_name(filepath: Path, source_names) -> str:
         stem = filepath.stem.strip()
 
         if stem:
@@ -917,11 +606,12 @@ class NamePolicy:
         if len(source_names) == 1:
             return NamePolicy.make_pov_identifier(source_names[0])
 
-        return "OBJ_mesh"
+        return "OBJ_asset"
 
     @staticmethod
-    def make_object_export_name(source_name: str) -> str:
-        return NamePolicy.make_pov_identifier(source_name)
+    def make_part_export_name(asset_export_name: str, source_name: str) -> str:
+        asset_core = asset_export_name[4:] if asset_export_name.startswith("OBJ_") else asset_export_name
+        return NamePolicy.make_pov_identifier(f"{asset_core}_{source_name}")
 
     @staticmethod
     def make_pov_identifier(name: str) -> str:
