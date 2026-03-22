@@ -107,6 +107,8 @@ class ObjectExportRecord:
     object_mesh_data: Optional[ObjectMeshData] = None
     transform_data: Optional[TransformData] = None
     material_data: Optional[MaterialData] = None
+    material_slot_index: Optional[int] = None
+    source_material_name: str = ""
 
 
 @dataclass(frozen=True)

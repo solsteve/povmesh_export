@@ -7,12 +7,10 @@ from .export_types import ImageTextureData, MaterialData
 
 class MaterialExtractor:
     """
-    Minimal Phase 2 material extractor.
+    Minimal material extractor.
 
     Supported pattern
     -----------------
-    - one material per object
-    - active material preferred
     - material must use nodes
     - active Material Output surface input must be linked
     - linked shader must be a Principled BSDF
@@ -20,16 +18,98 @@ class MaterialExtractor:
         * an unlinked literal color
         * or an Image Texture node directly linked to Base Color
 
+    Phase 3 note
+    ------------
+    Slot-based extraction is now supported via extract_material_data_for_slot().
+    The older object-level extract_material_data() entry point is retained for
+    compatibility with Phase 2 calling code.
+
     Unsupported cases fall back to an unsupported MaterialData record so
     geometry export can continue deterministically.
     """
 
     @staticmethod
     def extract_material_data(obj, export_name: str) -> MaterialData | None:
+        """
+        Backward-compatible Phase 2 entry point.
+
+        Resolution order:
+        - active material, if present
+        - otherwise first non-empty material slot
+        - otherwise None
+        """
         material = MaterialExtractor._choose_material(obj)
         if material is None:
             return None
 
+        return MaterialExtractor._extract_from_material(
+            material=material,
+            export_name=export_name,
+        )
+
+    @staticmethod
+    def extract_material_data_for_slot(
+        obj,
+        material_slot_index: int,
+        export_name: str,
+    ) -> MaterialData | None:
+        """
+        Phase 3 entry point.
+
+        Extract material data from one explicit Blender material slot.
+
+        Returns
+        -------
+        - MaterialData for a valid slot, including unsupported fallback records
+        - None only when the object has no material slots at all
+
+        Invalid or empty slots produce deterministic unsupported MaterialData
+        records so per-material mesh export can continue without ambiguity.
+        """
+        slots = getattr(obj, "material_slots", None)
+        if not slots:
+            return None
+
+        slot_count = len(slots)
+        if material_slot_index < 0 or material_slot_index >= slot_count:
+            return MaterialData(
+                source_name=f"{obj.name}:slot_{material_slot_index}",
+                export_name=f"{export_name}_MAT",
+                is_supported=False,
+                uses_nodes=False,
+                base_color=None,
+                image_texture=None,
+                uses_uv_mapping=False,
+                warning=(
+                    f"Material slot index {material_slot_index} is out of range "
+                    f"for object '{obj.name}'."
+                ),
+            )
+
+        slot = slots[material_slot_index]
+        material = getattr(slot, "material", None)
+        if material is None:
+            return MaterialData(
+                source_name=f"{obj.name}:slot_{material_slot_index}",
+                export_name=f"{export_name}_MAT",
+                is_supported=False,
+                uses_nodes=False,
+                base_color=None,
+                image_texture=None,
+                uses_uv_mapping=False,
+                warning=(
+                    f"Material slot {material_slot_index} on object '{obj.name}' "
+                    "has no assigned material."
+                ),
+            )
+
+        return MaterialExtractor._extract_from_material(
+            material=material,
+            export_name=export_name,
+        )
+
+    @staticmethod
+    def _extract_from_material(material, export_name: str) -> MaterialData:
         if not material.use_nodes or material.node_tree is None:
             return MaterialData(
                 source_name=material.name,
