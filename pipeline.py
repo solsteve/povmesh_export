@@ -116,50 +116,39 @@ class MeshExtractor:
         object_records: List[ObjectExportRecord] = []
 
         for obj in objects:
-            object_mesh_parts = MeshExtractor._extract_object_mesh_parts(
+            object_mesh_data = MeshExtractor._extract_single_object_mesh(
                 context,
                 obj,
                 export_options,
             )
 
-            if not object_mesh_parts:
+            if not object_mesh_data.faces:
                 continue
 
+            part_export_name = NamePolicy.make_part_export_name(
+                asset_export_name,
+                obj.name,
+            )
+
             transform_data = TransformExtractor.extract_transform_data(obj, export_options)
-            use_material_suffix = len(object_mesh_parts) > 1
 
-            for material_slot_index, object_mesh_data in object_mesh_parts:
-                material_name = MeshExtractor._get_material_name_for_slot(
+            material_data = None
+            if export_options.export_materials:
+                material_data = MaterialExtractor.extract_material_data(
                     obj,
-                    material_slot_index,
-                )
-                part_export_name = NamePolicy.make_part_export_name(
-                    asset_export_name,
-                    obj.name,
-                    material_slot_index=material_slot_index if use_material_suffix else None,
-                    material_name=material_name,
+                    part_export_name,
                 )
 
-                material_data = None
-                if export_options.export_materials:
-                    material_data = MaterialExtractor.extract_material_data_for_slot(
-                        obj,
-                        material_slot_index,
-                        part_export_name,
-                    )
-
-                object_records.append(
-                    ObjectExportRecord(
-                        source_name=obj.name,
-                        export_name=part_export_name,
-                        mesh_data=None,
-                        object_mesh_data=object_mesh_data,
-                        transform_data=transform_data,
-                        material_data=material_data,
-                        material_slot_index=material_slot_index,
-                        source_material_name=material_name or "",
-                    )
+            object_records.append(
+                ObjectExportRecord(
+                    source_name=obj.name,
+                    export_name=part_export_name,
+                    mesh_data=None,
+                    object_mesh_data=object_mesh_data,
+                    transform_data=transform_data,
+                    material_data=material_data,
                 )
+            )
 
         if not object_records:
             raise ExportError("Selected mesh objects contained no exportable faces.")
@@ -169,16 +158,16 @@ class MeshExtractor:
             export_options=export_options,
             object_records=object_records,
             combined_mesh_data=None,
-            source_names=source_names,
+            source_names=[record.source_name for record in object_records],
             asset_export_name=asset_export_name,
         )
 
     @staticmethod
-    def _extract_object_mesh_parts(
+    def _extract_single_object_mesh(
         context,
         obj,
         export_options: ExportOptions,
-    ) -> list[tuple[int, ObjectMeshData]]:
+    ) -> ObjectMeshData:
         depsgraph = context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
 
@@ -196,7 +185,7 @@ class MeshExtractor:
                 )
 
             mesh_eval.calc_loop_triangles()
-            return ExpandedCornerBuilder.build_object_mesh_parts(
+            return ExpandedCornerBuilder.build_object_mesh_data(
                 obj,
                 mesh_eval,
                 export_options,
@@ -206,72 +195,12 @@ class MeshExtractor:
             if mesh_eval is not None:
                 obj_eval.to_mesh_clear()
 
-    @staticmethod
-    def _get_material_name_for_slot(obj, material_slot_index: int) -> str | None:
-        slots = getattr(obj, "material_slots", None)
-        if not slots:
-            return None
-
-        if material_slot_index < 0 or material_slot_index >= len(slots):
-            return None
-
-        slot = slots[material_slot_index]
-        material = getattr(slot, "material", None)
-        if material is None:
-            return None
-
-        return str(getattr(material, "name", "") or "") or None
-
 
 class ExpandedCornerBuilder:
     @staticmethod
-    def build_object_mesh_parts(
-        obj,
-        mesh,
-        export_options: ExportOptions,
-    ) -> list[tuple[int, ObjectMeshData]]:
+    def build_object_mesh_data(obj, mesh, export_options: ExportOptions) -> ObjectMeshData:
         uv_layer = UVExtractor.get_active_render_uv_layer(mesh)
-        triangles_by_material_slot = ExpandedCornerBuilder._group_triangles_by_material_slot(mesh)
 
-        object_parts: list[tuple[int, ObjectMeshData]] = []
-
-        for material_slot_index, triangles in triangles_by_material_slot:
-            object_mesh_data = ExpandedCornerBuilder._build_object_mesh_data_for_triangles(
-                obj,
-                mesh,
-                triangles,
-                uv_layer,
-                export_options,
-            )
-            if object_mesh_data.faces:
-                object_parts.append((material_slot_index, object_mesh_data))
-
-        return object_parts
-
-    @staticmethod
-    def _group_triangles_by_material_slot(mesh) -> list[tuple[int, list]]:
-        grouped: dict[int, list] = {}
-
-        for tri in mesh.loop_triangles:
-            if len(tri.loops) != 3:
-                raise ExportError(
-                    "Triangulation failed: encountered a non-triangle loop triangle."
-                )
-
-            polygon = mesh.polygons[tri.polygon_index]
-            material_slot_index = int(getattr(polygon, "material_index", 0) or 0)
-            grouped.setdefault(material_slot_index, []).append(tri)
-
-        return sorted(grouped.items(), key=lambda item: item[0])
-
-    @staticmethod
-    def _build_object_mesh_data_for_triangles(
-        obj,
-        mesh,
-        triangles,
-        uv_layer,
-        export_options: ExportOptions,
-    ) -> ObjectMeshData:
         vertices: List[Vec3] = []
         faces: List[tuple[int, int, int]] = []
         normals: List[Vec3] = []
@@ -279,7 +208,12 @@ class ExpandedCornerBuilder:
         uvs: List[Vec2] = []
         uv_indices: List[tuple[int, int, int]] = []
 
-        for tri in triangles:
+        for tri in mesh.loop_triangles:
+            if len(tri.loops) != 3:
+                raise ExportError(
+                    "Triangulation failed: encountered a non-triangle loop triangle."
+                )
+
             face_corner_indices: List[int] = []
             uv_corner_indices: List[int] = []
 
@@ -681,34 +615,22 @@ class NamePolicy:
         material_slot_index: int | None = None,
         material_name: str | None = None,
     ) -> str:
-        asset_core = (
-            asset_export_name[4:]
-            if asset_export_name.startswith("OBJ_")
-            else asset_export_name
-        )
+        asset_core = asset_export_name[4:] if asset_export_name.startswith("OBJ_") else asset_export_name
         base_name = f"{asset_core}_{source_name}"
 
         if material_slot_index is None:
             return NamePolicy.make_pov_identifier(base_name)
 
-        material_tag = NamePolicy.make_material_part_tag(
-            material_slot_index,
-            material_name,
-        )
-        return NamePolicy.make_pov_identifier(f"{base_name}_{material_tag}")
+        material_label = NamePolicy._make_material_label(material_slot_index, material_name)
+        return NamePolicy.make_pov_identifier(f"{base_name}_{material_label}")
 
     @staticmethod
-    def make_material_part_tag(
-        material_slot_index: int,
-        material_name: str | None = None,
-    ) -> str:
+    def _make_material_label(material_slot_index: int, material_name: str | None) -> str:
         if material_name:
-            cleaned = re.sub(r"\W+", "_", material_name, flags=re.UNICODE)
-            cleaned = cleaned.strip("_")
+            cleaned = re.sub(r"\W", "_", material_name, flags=re.UNICODE).strip("_")
             if cleaned:
                 return f"MAT_{material_slot_index}_{cleaned}"
-
-        return f"MAT_{material_slot_index}"
+        return f"MAT_{material_slot_index}_UNASSIGNED"
 
     @staticmethod
     def make_pov_identifier(name: str) -> str:
