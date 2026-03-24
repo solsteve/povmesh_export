@@ -39,7 +39,7 @@ class ObjectSceneWriter:
             f.write(f"    {record.export_name}\n")
 
             if record.material_data is not None:
-                f.write(f"    texture {{ {record.material_data.export_name} }}\n")
+                f.write(f"    texture {{ {record.material_data.export_name}_MAT }}\n")
 
             if record.transform_data is not None and not record.transform_data.is_identity:
                 ObjectSceneWriter._write_matrix_transform(f, record.transform_data)

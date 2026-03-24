@@ -10,6 +10,7 @@ from .export_types import (
 
 class MaterialExtractor:
 
+
     @staticmethod
     def extract_material_data(obj, export_name: str) -> Optional[MaterialData]:
         """
@@ -134,6 +135,8 @@ class MaterialExtractor:
 
         # Case 2: Direct color
         color = base_color_input.default_value  # RGBA
+
+        print('COLOR = ', [c for c in color])
 
         return MaterialData(
             source_name=mat.name,

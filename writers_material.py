@@ -74,9 +74,22 @@ class MaterialWriter:
         )
 
     @staticmethod
+    def _linear_to_srgb_channel(c: float) -> float:
+        c = max(0.0, min(1.0, float(c)))
+        if c <= 0.0031308:
+            return 12.92 * c
+        return 1.055 * (c ** (1.0 / 2.4)) - 0.055
+
+
+    @staticmethod
     def _write_solid_color_material(f: TextIO, material: MaterialData) -> None:
-        r, g, b = material.base_color
-        f.write(f"#declare {material.export_name} = texture {{\n")
+        r_lin, g_lin, b_lin = material.base_color
+
+        r = MaterialWriter._linear_to_srgb_channel(r_lin)
+        g = MaterialWriter._linear_to_srgb_channel(g_lin)
+        b = MaterialWriter._linear_to_srgb_channel(b_lin)
+
+        f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    pigment {\n")
         f.write(
             f"        color rgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n"
@@ -85,13 +98,14 @@ class MaterialWriter:
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
+
     @staticmethod
     def _write_image_texture_material(f: TextIO, material: MaterialData) -> None:
         image = material.image_texture
         image_path = image.filepath_resolved or image.filepath_raw or image.image_name
         image_path = MaterialFormatters.escape_pov_string(image_path)
 
-        f.write(f"#declare {material.export_name} = texture {{\n")
+        f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    uv_mapping\n")
         f.write("    pigment {\n")
         f.write("        image_map {\n")
@@ -105,6 +119,7 @@ class MaterialWriter:
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
+
     @staticmethod
     def _write_fallback_material(
         f: TextIO,
@@ -113,27 +128,18 @@ class MaterialWriter:
     ) -> None:
         if include_comments and material.warning:
             f.write(f"// Material fallback for {material.source_name}: {material.warning}\n")
-        f.write(f"#declare {material.export_name} = texture {{\n")
+        f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    pigment {\n")
         f.write("        color srgb <0.8, 0.8, 0.8>\n")
         f.write("    }\n")
-        f.write("    finish {\n")
-        f.write("        ambient 1\n")
-        f.write("        diffuse 0.8\n")
-        f.write("        specular 0\n")
-        f.write("        roughness 1\n")
-        f.write("    }\n")
+        MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
+
+
+
 
     @staticmethod
     def _write_finish_block(handle, material_data):
-        """
-        Write POV-Ray finish block plus debug/mapping comments.
-
-        Mapping comments show which Blender inputs fed which POV parameters.
-        Raw debug comments show the extracted Blender-side values directly.
-        """
-
         roughness = material_data.roughness if material_data.roughness is not None else 1.0
         specular = material_data.specular if material_data.specular is not None else 0.0
         metallic = material_data.metallic if material_data.metallic is not None else 0.0
@@ -145,14 +151,11 @@ class MaterialWriter:
         handle.write(f"    // phong == roughness: {roughness:.3f}\n")
         handle.write(f"    // specular == specular: {specular:.3f}\n")
         handle.write(f"    // reflection == metallic: {metallic:.3f}\n")
-        handle.write("\n")
         handle.write("    // debug material inputs\n")
         handle.write(f"    // roughness raw: {roughness:.3f}\n")
         handle.write(f"    // specular raw: {specular:.3f}\n")
         handle.write(f"    // metallic raw: {metallic:.3f}\n")
-
         handle.write("    finish {\n")
-        handle.write("        ambient 1\n")
         handle.write("        diffuse 0.8\n")
         handle.write(f"        phong {phong:.6f}\n")
         handle.write(f"        specular {specular:.6f}\n")
@@ -160,6 +163,7 @@ class MaterialWriter:
         handle.write(f"        reflection {reflection:.6f}\n")
         handle.write(f"        roughness {roughness:.6f}\n")
         handle.write("    }\n")
+
 
     @staticmethod
     def _map_finish_values(material: MaterialData) -> tuple[float, float, float]:
