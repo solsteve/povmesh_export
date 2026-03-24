@@ -85,6 +85,9 @@ class MaterialWriter:
     def _write_solid_color_material(f: TextIO, material: MaterialData) -> None:
         r_lin, g_lin, b_lin = material.base_color
 
+        alpha = material.alpha if material.alpha is not None else 1.0
+        transmit = 1.0 - alpha
+
         r = MaterialWriter._linear_to_srgb_channel(r_lin)
         g = MaterialWriter._linear_to_srgb_channel(g_lin)
         b = MaterialWriter._linear_to_srgb_channel(b_lin)
@@ -92,8 +95,8 @@ class MaterialWriter:
         f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    pigment {\n")
         f.write(
-            f"        color rgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n"
-        )
+            f"        color srgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n")
+        f.write(f"        transmit {transmit}\n")
         f.write("    }\n")
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")

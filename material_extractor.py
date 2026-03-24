@@ -99,6 +99,16 @@ class MaterialExtractor:
 
         base_color_input = principled.inputs.get("Base Color")
 
+        # --- Alpha extraction ---
+        alpha = None
+        alpha_input = principled.inputs.get("Alpha")
+
+        if alpha_input is not None:
+            try:
+                alpha = float(alpha_input.default_value)
+            except Exception:
+                alpha = None
+
         if base_color_input is None:
             return MaterialExtractor._build_fallback(export_name, "NO_BASE_COLOR")
 
@@ -127,7 +137,8 @@ class MaterialExtractor:
                     uses_uv_mapping=True,
                     roughness=MaterialExtractor._get_socket_value(principled, "Roughness"),
                     specular=MaterialExtractor._get_specular(principled),
-                    metallic=MaterialExtractor._get_socket_value(principled, "Metallic")
+                    metallic=MaterialExtractor._get_socket_value(principled, "Metallic"),
+                    alpha=alpha
                 )
 
             else:
@@ -152,6 +163,7 @@ class MaterialExtractor:
             roughness=MaterialExtractor._get_socket_value(principled, "Roughness"),
             specular=MaterialExtractor._get_specular(principled),
             metallic=MaterialExtractor._get_socket_value(principled, "Metallic"),
+            alpha=alpha
         )
 
     # -------------------------------------------------------------------------

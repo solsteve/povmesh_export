@@ -81,3 +81,28 @@ cleaner comments in SDL
 
 optional slot index annotation (helps debugging)
 
+
+
+
+
+
+
+
+
+
+
+
+
+So the clean progression from here is:
+
+alpha / transmit
+
+IOR / refraction polish
+
+emission support
+
+texture path handling
+
+instancing / duplicate mesh detection
+
+If you want to stay with the highest-impact next feature, I would do alpha support first.

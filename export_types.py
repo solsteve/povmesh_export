@@ -78,6 +78,7 @@ class MaterialData:
     roughness: Optional[float] = None
     specular: Optional[float] = None
     metallic: Optional[float] = None
+    alpha: Optional[float] = None
 
 @dataclass(frozen=True)
 class ObjectMeshData:
