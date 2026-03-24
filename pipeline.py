@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, TextIO
+from collections import defaultdict
+from typing import Iterable, List, TextIO
 
 from .coordinate_policy import CoordinatePolicy
 from .export_types import (
@@ -23,6 +24,8 @@ from .writers_material import MaterialWriter
 from .writers_mesh import MeshDeclarationWriter
 from .writers_object import ObjectSceneWriter
 
+print("[POV EXPORT DEBUG] pipeline loaded from:", __file__)
+print("[POV EXPORT DEBUG] ObjectExportRecord fields:", ObjectExportRecord.__annotations__)
 
 class ExportError(Exception):
     """Raised for expected exporter failures that should be shown to the user."""
@@ -116,39 +119,57 @@ class MeshExtractor:
         object_records: List[ObjectExportRecord] = []
 
         for obj in objects:
-            object_mesh_data = MeshExtractor._extract_single_object_mesh(
+            object_parts = MeshExtractor._extract_object_mesh_parts(
                 context,
                 obj,
                 export_options,
             )
 
-            if not object_mesh_data.faces:
+            if not object_parts:
                 continue
 
-            part_export_name = NamePolicy.make_part_export_name(
-                asset_export_name,
-                obj.name,
-            )
-
             transform_data = TransformExtractor.extract_transform_data(obj, export_options)
+            multiple_parts = len(object_parts) > 1
 
-            material_data = None
-            if export_options.export_materials:
-                material_data = MaterialExtractor.extract_material_data(
+            for material_slot_index, object_mesh_data in object_parts:
+                source_material_name = MaterialExtractor.get_slot_material_name(
                     obj,
-                    part_export_name,
+                    material_slot_index,
                 )
 
-            object_records.append(
-                ObjectExportRecord(
-                    source_name=obj.name,
-                    export_name=part_export_name,
-                    mesh_data=None,
-                    object_mesh_data=object_mesh_data,
-                    transform_data=transform_data,
-                    material_data=material_data,
+                part_export_name = NamePolicy.make_part_export_name(
+                    asset_export_name,
+                    obj.name,
+                    material_slot_index=material_slot_index if multiple_parts else None,
+                    material_name=source_material_name,
                 )
-            )
+
+                material_data = None
+                if export_options.export_materials:
+                    if multiple_parts:
+                        material_data = MaterialExtractor.extract_material_data_for_slot(
+                            obj,
+                            material_slot_index,
+                            part_export_name,
+                        )
+                    else:
+                        material_data = MaterialExtractor.extract_material_data(
+                            obj,
+                            part_export_name,
+                        )
+
+                object_records.append(
+                    ObjectExportRecord(
+                        source_name=obj.name,
+                        export_name=part_export_name,
+                        mesh_data=None,
+                        object_mesh_data=object_mesh_data,
+                        transform_data=transform_data,
+                        material_data=material_data,
+                        material_slot_index=material_slot_index,
+                        source_material_name=source_material_name,
+                    )
+                )
 
         if not object_records:
             raise ExportError("Selected mesh objects contained no exportable faces.")
@@ -163,11 +184,11 @@ class MeshExtractor:
         )
 
     @staticmethod
-    def _extract_single_object_mesh(
+    def _extract_object_mesh_parts(
         context,
         obj,
         export_options: ExportOptions,
-    ) -> ObjectMeshData:
+    ) -> List[tuple[int, ObjectMeshData]]:
         depsgraph = context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
 
@@ -185,7 +206,7 @@ class MeshExtractor:
                 )
 
             mesh_eval.calc_loop_triangles()
-            return ExpandedCornerBuilder.build_object_mesh_data(
+            return ExpandedCornerBuilder.build_object_mesh_parts(
                 obj,
                 mesh_eval,
                 export_options,
@@ -198,7 +219,50 @@ class MeshExtractor:
 
 class ExpandedCornerBuilder:
     @staticmethod
-    def build_object_mesh_data(obj, mesh, export_options: ExportOptions) -> ObjectMeshData:
+    def build_object_mesh_parts(
+        obj,
+        mesh,
+        export_options: ExportOptions,
+    ) -> List[tuple[int, ObjectMeshData]]:
+        triangles_by_slot: dict[int, list] = defaultdict(list)
+
+        polygon_count = len(getattr(mesh, "polygons", []))
+
+        for tri in mesh.loop_triangles:
+            polygon_index = getattr(tri, "polygon_index", -1)
+            material_slot_index = -1
+
+            if 0 <= polygon_index < polygon_count:
+                polygon = mesh.polygons[polygon_index]
+                material_slot_index = int(getattr(polygon, "material_index", -1))
+
+            triangles_by_slot[material_slot_index].append(tri)
+
+        part_records: List[tuple[int, ObjectMeshData]] = []
+        for material_slot_index in sorted(triangles_by_slot):
+            tri_group = triangles_by_slot[material_slot_index]
+            if not tri_group:
+                continue
+
+            object_mesh_data = ExpandedCornerBuilder._build_object_mesh_data_for_triangles(
+                obj,
+                mesh,
+                export_options,
+                tri_group,
+            )
+
+            if object_mesh_data.faces:
+                part_records.append((material_slot_index, object_mesh_data))
+
+        return part_records
+
+    @staticmethod
+    def _build_object_mesh_data_for_triangles(
+        obj,
+        mesh,
+        export_options: ExportOptions,
+        triangles: Iterable,
+    ) -> ObjectMeshData:
         uv_layer = UVExtractor.get_active_render_uv_layer(mesh)
 
         vertices: List[Vec3] = []
@@ -208,7 +272,7 @@ class ExpandedCornerBuilder:
         uvs: List[Vec2] = []
         uv_indices: List[tuple[int, int, int]] = []
 
-        for tri in mesh.loop_triangles:
+        for tri in triangles:
             if len(tri.loops) != 3:
                 raise ExportError(
                     "Triangulation failed: encountered a non-triangle loop triangle."
@@ -626,11 +690,12 @@ class NamePolicy:
 
     @staticmethod
     def _make_material_label(material_slot_index: int, material_name: str | None) -> str:
+        slot_label = str(material_slot_index) if material_slot_index >= 0 else "INVALID"
         if material_name:
             cleaned = re.sub(r"\W", "_", material_name, flags=re.UNICODE).strip("_")
             if cleaned:
-                return f"MAT_{material_slot_index}_{cleaned}"
-        return f"MAT_{material_slot_index}_UNASSIGNED"
+                return f"MAT_{slot_label}_{cleaned}"
+        return f"MAT_{slot_label}_UNASSIGNED"
 
     @staticmethod
     def make_pov_identifier(name: str) -> str:

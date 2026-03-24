@@ -5,6 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+print("[POV EXPORT DEBUG] export_types loaded from:", __file__)
 
 Vec2 = Tuple[float, float]
 Vec3 = Tuple[float, float, float]
@@ -74,7 +75,9 @@ class MaterialData:
     image_texture: Optional[ImageTextureData] = None
     uses_uv_mapping: bool = False
     warning: str = ""
-
+    roughness: Optional[float] = None
+    specular: Optional[float] = None
+    metallic: Optional[float] = None
 
 @dataclass(frozen=True)
 class ObjectMeshData:
@@ -110,7 +113,6 @@ class ObjectExportRecord:
     material_slot_index: Optional[int] = None
     source_material_name: str = ""
 
-
 @dataclass(frozen=True)
 class SceneExportData:
     export_context: ExportContext
@@ -119,3 +121,4 @@ class SceneExportData:
     combined_mesh_data: Optional[MeshData] = None
     source_names: List[str] = field(default_factory=list)
     asset_export_name: str = ""
+

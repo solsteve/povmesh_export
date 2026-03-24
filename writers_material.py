@@ -7,7 +7,7 @@ from .export_types import MaterialData
 
 class MaterialWriter:
     """
-    Writes minimal Phase 2 material declarations.
+    Writes minimal material declarations.
 
     Supported outputs
     -----------------
@@ -79,15 +79,10 @@ class MaterialWriter:
         f.write(f"#declare {material.export_name} = texture {{\n")
         f.write("    pigment {\n")
         f.write(
-            f"        color srgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n"
+            f"        color rgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n"
         )
         f.write("    }\n")
-        f.write("    finish {\n")
-        f.write("        ambient 1\n")
-        f.write("        diffuse 0.8\n")
-        f.write("        specular 0\n")
-        f.write("        roughness 1\n")
-        f.write("    }\n")
+        MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
     @staticmethod
@@ -107,12 +102,7 @@ class MaterialWriter:
         f.write("        rotate <0, 0, 180>\n")
         f.write("        translate <1, 0, 1>\n")
         f.write("    }\n")
-        f.write("    finish {\n")
-        f.write("        ambient 1\n")
-        f.write("        diffuse 0.8\n")
-        f.write("        specular 0\n")
-        f.write("        roughness 1\n")
-        f.write("    }\n")
+        MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
     @staticmethod
@@ -134,6 +124,62 @@ class MaterialWriter:
         f.write("        roughness 1\n")
         f.write("    }\n")
         f.write("}\n")
+
+    @staticmethod
+    def _write_finish_block(handle, material_data):
+        """
+        Write POV-Ray finish block plus debug/mapping comments.
+
+        Mapping comments show which Blender inputs fed which POV parameters.
+        Raw debug comments show the extracted Blender-side values directly.
+        """
+
+        roughness = material_data.roughness if material_data.roughness is not None else 1.0
+        specular = material_data.specular if material_data.specular is not None else 0.0
+        metallic = material_data.metallic if material_data.metallic is not None else 0.0
+
+        phong = specular * (1.0 - roughness)
+        reflection = metallic * 0.5
+
+        handle.write("    // pov == blender\n")
+        handle.write(f"    // phong == roughness: {roughness:.3f}\n")
+        handle.write(f"    // specular == specular: {specular:.3f}\n")
+        handle.write(f"    // reflection == metallic: {metallic:.3f}\n")
+        handle.write("\n")
+        handle.write("    // debug material inputs\n")
+        handle.write(f"    // roughness raw: {roughness:.3f}\n")
+        handle.write(f"    // specular raw: {specular:.3f}\n")
+        handle.write(f"    // metallic raw: {metallic:.3f}\n")
+
+        handle.write("    finish {\n")
+        handle.write("        ambient 1\n")
+        handle.write("        diffuse 0.8\n")
+        handle.write(f"        phong {phong:.6f}\n")
+        handle.write(f"        specular {specular:.6f}\n")
+        handle.write("        phong_size 40\n")
+        handle.write(f"        reflection {reflection:.6f}\n")
+        handle.write(f"        roughness {roughness:.6f}\n")
+        handle.write("    }\n")
+
+    @staticmethod
+    def _map_finish_values(material: MaterialData) -> tuple[float, float, float]:
+        roughness = MaterialWriter._clamp_unit(material.roughness, default=1.0)
+        specular = MaterialWriter._clamp_unit(material.specular, default=0.0)
+        metallic = MaterialWriter._clamp_unit(material.metallic, default=0.0)
+
+        phong = specular * (1.0 - roughness)
+        reflection = metallic * 0.5
+        return phong, specular, reflection
+
+    @staticmethod
+    def _clamp_unit(value: float | None, default: float) -> float:
+        if value is None:
+            return default
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _image_map_type_token(path_str: str) -> str:
