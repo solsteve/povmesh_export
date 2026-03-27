@@ -109,6 +109,7 @@ class MaterialExtractor:
             except Exception:
                 alpha = None
 
+
         if base_color_input is None:
             return MaterialExtractor._build_fallback(export_name, "NO_BASE_COLOR")
 
@@ -131,14 +132,19 @@ class MaterialExtractor:
                     is_supported=True,
                     uses_nodes=True,
                     image_texture=ImageTextureData(
-                        image_path=image_path,
-                        interpolation="bilinear"
+                        source_name=mat.name,
+                        image_name=str(getattr(image, "name", "") or ""),
+                        filepath_raw=str(getattr(image, "filepath", "") or ""),
+                        filepath_resolved=image_path,
+                        exists_on_disk=bool(image_path),
+                        uses_uv_mapping=True,
                     ),
                     uses_uv_mapping=True,
                     roughness=MaterialExtractor._get_socket_value(principled, "Roughness"),
                     specular=MaterialExtractor._get_specular(principled),
                     metallic=MaterialExtractor._get_socket_value(principled, "Metallic"),
-                    alpha=alpha
+                    alpha=alpha,
+                    ior=MaterialExtractor._get_socket_value(principled, "IOR")
                 )
 
             else:
@@ -163,7 +169,8 @@ class MaterialExtractor:
             roughness=MaterialExtractor._get_socket_value(principled, "Roughness"),
             specular=MaterialExtractor._get_specular(principled),
             metallic=MaterialExtractor._get_socket_value(principled, "Metallic"),
-            alpha=alpha
+            alpha=alpha,
+            ior=MaterialExtractor._get_socket_value(principled, "IOR")
         )
 
     # -------------------------------------------------------------------------

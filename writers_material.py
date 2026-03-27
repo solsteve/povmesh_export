@@ -104,15 +104,18 @@ class MaterialWriter:
 
     @staticmethod
     def _write_image_texture_material(f: TextIO, material: MaterialData) -> None:
-        image = material.image_texture
+        image      = material.image_texture
         image_path = image.filepath_resolved or image.filepath_raw or image.image_name
         image_path = MaterialFormatters.escape_pov_string(image_path)
+        alpha      = material.alpha if material.alpha is not None else 1.0
+        transmit   = 1.0 - alpha
 
         f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    uv_mapping\n")
         f.write("    pigment {\n")
         f.write("        image_map {\n")
         f.write(f'            {MaterialWriter._image_map_type_token(image_path)} "{image_path}"\n')
+        f.write(f"            transmit all {MaterialFormatters.float(transmit)}\n")
         f.write("            once\n")
         f.write("        }\n")
         f.write("        scale <1, -1, 1>\n")
@@ -144,8 +147,8 @@ class MaterialWriter:
     @staticmethod
     def _write_finish_block(handle, material_data):
         roughness = material_data.roughness if material_data.roughness is not None else 1.0
-        specular = material_data.specular if material_data.specular is not None else 0.0
-        metallic = material_data.metallic if material_data.metallic is not None else 0.0
+        specular  = material_data.specular  if material_data.specular  is not None else 0.0
+        metallic  = material_data.metallic  if material_data.metallic  is not None else 0.0
 
         phong = specular * (1.0 - roughness)
         reflection = metallic * 0.5
@@ -154,6 +157,13 @@ class MaterialWriter:
         handle.write(f"    // phong == roughness: {roughness:.3f}\n")
         handle.write(f"    // specular == specular: {specular:.3f}\n")
         handle.write(f"    // reflection == metallic: {metallic:.3f}\n")
+
+        if material_data.alpha is not None:
+            handle.write(f"    // alpha == alpha: {material_data.alpha:.3f}\n")
+
+        if material_data.ior is not None:
+            handle.write(f"    // ior == ior: {material_data.ior:.3f}\n")
+
         handle.write("    // debug material inputs\n")
         handle.write(f"    // roughness raw: {roughness:.3f}\n")
         handle.write(f"    // specular raw: {specular:.3f}\n")

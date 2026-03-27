@@ -79,6 +79,7 @@ class MaterialData:
     specular: Optional[float] = None
     metallic: Optional[float] = None
     alpha: Optional[float] = None
+    ior: Optional[float] = None
 
 @dataclass(frozen=True)
 class ObjectMeshData:
@@ -89,7 +90,6 @@ class ObjectMeshData:
     normal_indices: List[Face3]
     uvs: List[Vec2]
     uv_indices: List[Face3]
-
 
 @dataclass(frozen=True)
 class MeshData:

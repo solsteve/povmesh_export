@@ -41,6 +41,20 @@ class ObjectSceneWriter:
             if record.material_data is not None:
                 f.write(f"    texture {{ {record.material_data.export_name}_MAT }}\n")
 
+            material = record.material_data
+
+            if material.alpha < 0.999:
+                f.write("    hollow\n")
+
+            if (
+                    material is not None
+                    and material.alpha is not None
+                    and material.alpha < 0.999
+                    and material.ior is not None
+            ):
+                f.write(f"    interior {{ ior {material.ior:.6f} }}\n")
+
+
             if record.transform_data is not None and not record.transform_data.is_identity:
                 ObjectSceneWriter._write_matrix_transform(f, record.transform_data)
 
