@@ -2,25 +2,11 @@ from __future__ import annotations
 
 from typing import Iterable, TextIO
 
-from .export_types import MaterialData
+from .export_types import MaterialData, TransparencyMode
+from .material_policy import MaterialPolicy
 
 
 class MaterialWriter:
-    """
-    Writes minimal material declarations.
-
-    Supported outputs
-    -----------------
-    - solid Base Color from Principled BSDF
-    - Image Texture directly feeding Base Color
-
-    Image texture output uses the confirmed POV-Ray correction:
-        once
-        scale <1,-1,1>
-        rotate <0,0,180>
-        translate <1,0,1>
-    """
-
     @staticmethod
     def write_material_declarations(
         f: TextIO,
@@ -28,7 +14,6 @@ class MaterialWriter:
         include_comments: bool = True,
     ) -> None:
         material_list = [mat for mat in material_records if mat is not None]
-
         if not material_list:
             return
 
@@ -38,11 +23,7 @@ class MaterialWriter:
             f.write("// ------------------------------------------------------------\n")
 
         for material in material_list:
-            MaterialWriter.write_material_declaration(
-                f,
-                material,
-                include_comments=include_comments,
-            )
+            MaterialWriter.write_material_declaration(f, material, include_comments=include_comments)
             f.write("\n")
 
     @staticmethod
@@ -51,27 +32,19 @@ class MaterialWriter:
         material: MaterialData,
         include_comments: bool = True,
     ) -> None:
-        if not material.is_supported:
-            MaterialWriter._write_fallback_material(
-                f,
-                material,
-                include_comments=include_comments,
-            )
-            return
+        material = MaterialPolicy.normalize(material)
 
+        if not material.is_supported:
+            MaterialWriter._write_fallback_material(f, material, include_comments=include_comments)
+            return
         if material.image_texture is not None:
             MaterialWriter._write_image_texture_material(f, material)
             return
-
         if material.base_color is not None:
             MaterialWriter._write_solid_color_material(f, material)
             return
 
-        MaterialWriter._write_fallback_material(
-            f,
-            material,
-            include_comments=include_comments,
-        )
+        MaterialWriter._write_fallback_material(f, material, include_comments=include_comments)
 
     @staticmethod
     def _linear_to_srgb_channel(c: float) -> float:
@@ -80,14 +53,10 @@ class MaterialWriter:
             return 12.92 * c
         return 1.055 * (c ** (1.0 / 2.4)) - 0.055
 
-
     @staticmethod
     def _write_solid_color_material(f: TextIO, material: MaterialData) -> None:
+        assert material.base_color is not None
         r_lin, g_lin, b_lin = material.base_color
-
-        alpha = material.alpha if material.alpha is not None else 1.0
-        transmit = 1.0 - alpha
-
         r = MaterialWriter._linear_to_srgb_channel(r_lin)
         g = MaterialWriter._linear_to_srgb_channel(g_lin)
         b = MaterialWriter._linear_to_srgb_channel(b_lin)
@@ -95,27 +64,27 @@ class MaterialWriter:
         f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    pigment {\n")
         f.write(
-            f"        color srgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>\n")
-        f.write(f"        transmit {transmit}\n")
+            f"        color srgb <{MaterialFormatters.float(r)}, {MaterialFormatters.float(g)}, {MaterialFormatters.float(b)}>"
+        )
+        MaterialWriter._write_transparency_terms_for_solid(f, material)
+        f.write("\n")
         f.write("    }\n")
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
-
     @staticmethod
     def _write_image_texture_material(f: TextIO, material: MaterialData) -> None:
-        image      = material.image_texture
-        image_path = image.filepath_resolved or image.filepath_raw or image.image_name
+        image = material.image_texture
+        assert image is not None
+        image_path = image.emitted_path or image.filepath_resolved or image.filepath_raw or image.image_name
         image_path = MaterialFormatters.escape_pov_string(image_path)
-        alpha      = material.alpha if material.alpha is not None else 1.0
-        transmit   = 1.0 - alpha
 
         f.write(f"#declare {material.export_name}_MAT = texture {{\n")
         f.write("    uv_mapping\n")
         f.write("    pigment {\n")
         f.write("        image_map {\n")
         f.write(f'            {MaterialWriter._image_map_type_token(image_path)} "{image_path}"\n')
-        f.write(f"            transmit all {MaterialFormatters.float(transmit)}\n")
+        MaterialWriter._write_transparency_terms_for_image(f, material)
         f.write("            once\n")
         f.write("        }\n")
         f.write("        scale <1, -1, 1>\n")
@@ -124,7 +93,6 @@ class MaterialWriter:
         f.write("    }\n")
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
-
 
     @staticmethod
     def _write_fallback_material(
@@ -141,62 +109,55 @@ class MaterialWriter:
         MaterialWriter._write_finish_block(f, material)
         f.write("}\n")
 
-
-
+    @staticmethod
+    def _write_transparency_terms_for_solid(f: TextIO, material: MaterialData) -> None:
+        transmit = material.transparency.scalar_transmit
+        if transmit <= 1.0e-9:
+            return
+        if material.transparency.mode == TransparencyMode.FILTER:
+            f.write(f" filter {MaterialFormatters.float(transmit)}")
+        else:
+            f.write(f" transmit {MaterialFormatters.float(transmit)}")
 
     @staticmethod
-    def _write_finish_block(handle, material_data):
-        roughness = material_data.roughness if material_data.roughness is not None else 1.0
-        specular  = material_data.specular  if material_data.specular  is not None else 0.0
-        metallic  = material_data.metallic  if material_data.metallic  is not None else 0.0
+    def _write_transparency_terms_for_image(f: TextIO, material: MaterialData) -> None:
+        transmit = material.transparency.scalar_transmit
+        if transmit <= 1.0e-9:
+            return
+        keyword = "filter all" if material.transparency.mode == TransparencyMode.FILTER else "transmit all"
+        f.write(f"            {keyword} {MaterialFormatters.float(transmit)}\n")
 
-        phong = specular * (1.0 - roughness)
-        reflection = metallic * 0.5
-
+    @staticmethod
+    def _write_finish_block(handle: TextIO, material: MaterialData) -> None:
+        values = MaterialPolicy.map_finish(material)
         handle.write("    // pov == blender\n")
-        handle.write(f"    // phong == roughness: {roughness:.3f}\n")
-        handle.write(f"    // specular == specular: {specular:.3f}\n")
-        handle.write(f"    // reflection == metallic: {metallic:.3f}\n")
+        handle.write(f"    // phong == roughness: {values['roughness']:.3f}\n")
+        handle.write(f"    // specular == specular: {values['specular']:.3f}\n")
+        handle.write(f"    // reflection == metallic: {values['metallic']:.3f}\n")
 
-        if material_data.alpha is not None:
-            handle.write(f"    // alpha == alpha: {material_data.alpha:.3f}\n")
+        if material.alpha is not None:
+            handle.write(f"    // alpha == alpha: {material.alpha:.3f}\n")
+        if material.ior is not None:
+            handle.write(f"    // ior == ior: {material.ior:.3f}\n")
+        if material.emission.color is not None:
+            r, g, b = material.emission.color
+            handle.write(f"    // emission == emission color: <{r:.3f}, {g:.3f}, {b:.3f}>\n")
+            handle.write(f"    // emission_strength == emission strength: {material.emission.strength:.3f}\n")
 
-        if material_data.ior is not None:
-            handle.write(f"    // ior == ior: {material_data.ior:.3f}\n")
-
-        handle.write("    // debug material inputs\n")
-        handle.write(f"    // roughness raw: {roughness:.3f}\n")
-        handle.write(f"    // specular raw: {specular:.3f}\n")
-        handle.write(f"    // metallic raw: {metallic:.3f}\n")
         handle.write("    finish {\n")
-        handle.write("        diffuse 0.8\n")
-        handle.write(f"        phong {phong:.6f}\n")
-        handle.write(f"        specular {specular:.6f}\n")
-        handle.write("        phong_size 40\n")
-        handle.write(f"        reflection {reflection:.6f}\n")
-        handle.write(f"        roughness {roughness:.6f}\n")
+        handle.write(f"        diffuse {values['diffuse']:.6f}\n")
+        handle.write(f"        phong {values['phong']:.6f}\n")
+        handle.write(f"        specular {values['specular']:.6f}\n")
+        handle.write(f"        phong_size {values['phong_size']:.6f}\n")
+        handle.write(f"        reflection {values['reflection']:.6f}\n")
+        handle.write(f"        roughness {values['roughness']:.6f}\n")
+        if material.emission.is_emissive and material.emission.color is not None:
+            er, eg, eb = material.emission.color
+            strength = values['emission_strength']
+            handle.write(
+                f"        emission <{MaterialFormatters.float(er * strength)}, {MaterialFormatters.float(eg * strength)}, {MaterialFormatters.float(eb * strength)}>\n"
+            )
         handle.write("    }\n")
-
-
-    @staticmethod
-    def _map_finish_values(material: MaterialData) -> tuple[float, float, float]:
-        roughness = MaterialWriter._clamp_unit(material.roughness, default=1.0)
-        specular = MaterialWriter._clamp_unit(material.specular, default=0.0)
-        metallic = MaterialWriter._clamp_unit(material.metallic, default=0.0)
-
-        phong = specular * (1.0 - roughness)
-        reflection = metallic * 0.5
-        return phong, specular, reflection
-
-    @staticmethod
-    def _clamp_unit(value: float | None, default: float) -> float:
-        if value is None:
-            return default
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return default
-        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _image_map_type_token(path_str: str) -> str:

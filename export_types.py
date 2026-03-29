@@ -5,8 +5,6 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-print("[POV EXPORT DEBUG] export_types loaded from:", __file__)
-
 Vec2 = Tuple[float, float]
 Vec3 = Tuple[float, float, float]
 Face3 = Tuple[int, int, int]
@@ -29,6 +27,25 @@ class CoordinateMode(str, Enum):
     BLENDER_TO_POV = "BLENDER_TO_POV"
 
 
+class TransparencyMode(str, Enum):
+    AUTO = "AUTO"
+    TRANSMIT = "TRANSMIT"
+    FILTER = "FILTER"
+
+
+class TexturePathMode(str, Enum):
+    ABSOLUTE = "ABSOLUTE"
+    RELATIVE = "RELATIVE"
+    COPY = "COPY"
+
+
+class AlphaSourceKind(str, Enum):
+    NONE = "NONE"
+    SCALAR = "SCALAR"
+    IMAGE = "IMAGE"
+    SCALAR_TIMES_IMAGE = "SCALAR_TIMES_IMAGE"
+
+
 @dataclass(frozen=True)
 class ExportContext:
     filepath: Path
@@ -42,6 +59,12 @@ class ExportOptions:
     emit_debug_helpers: bool = True
     combine_objects: bool = False
     include_comments: bool = True
+    transparency_mode: TransparencyMode = TransparencyMode.AUTO
+    texture_path_mode: TexturePathMode = TexturePathMode.ABSOLUTE
+    copy_texture_assets: bool = False
+    texture_asset_subdir: str = "textures"
+    reuse_identical_meshes: bool = False
+    preserve_custom_normals: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +79,13 @@ class TransformData:
 
 
 @dataclass(frozen=True)
+class TexturePathData:
+    emitted_path: str = ""
+    path_mode: TexturePathMode = TexturePathMode.ABSOLUTE
+    copied: bool = False
+
+
+@dataclass(frozen=True)
 class ImageTextureData:
     source_name: str = ""
     image_name: str = ""
@@ -63,6 +93,32 @@ class ImageTextureData:
     filepath_resolved: str = ""
     exists_on_disk: bool = False
     uses_uv_mapping: bool = True
+    has_alpha_channel: bool = False
+    emitted_path: str = ""
+
+
+@dataclass(frozen=True)
+class TransparencyData:
+    alpha_scalar: Optional[float] = None
+    image_has_alpha: bool = False
+    alpha_source_kind: AlphaSourceKind = AlphaSourceKind.NONE
+    mode: TransparencyMode = TransparencyMode.AUTO
+    is_transparent: bool = False
+    scalar_transmit: float = 0.0
+
+
+@dataclass(frozen=True)
+class EmissionData:
+    color: Optional[ColorRGB] = None
+    strength: float = 0.0
+    is_emissive: bool = False
+
+
+@dataclass(frozen=True)
+class FinishData:
+    roughness: Optional[float] = None
+    specular: Optional[float] = None
+    metallic: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -75,11 +131,27 @@ class MaterialData:
     image_texture: Optional[ImageTextureData] = None
     uses_uv_mapping: bool = False
     warning: str = ""
-    roughness: Optional[float] = None
-    specular: Optional[float] = None
-    metallic: Optional[float] = None
-    alpha: Optional[float] = None
+    finish: FinishData = field(default_factory=FinishData)
+    transparency: TransparencyData = field(default_factory=TransparencyData)
+    emission: EmissionData = field(default_factory=EmissionData)
     ior: Optional[float] = None
+
+    @property
+    def roughness(self) -> Optional[float]:
+        return self.finish.roughness
+
+    @property
+    def specular(self) -> Optional[float]:
+        return self.finish.specular
+
+    @property
+    def metallic(self) -> Optional[float]:
+        return self.finish.metallic
+
+    @property
+    def alpha(self) -> Optional[float]:
+        return self.transparency.alpha_scalar
+
 
 @dataclass(frozen=True)
 class ObjectMeshData:
@@ -90,6 +162,7 @@ class ObjectMeshData:
     normal_indices: List[Face3]
     uvs: List[Vec2]
     uv_indices: List[Face3]
+
 
 @dataclass(frozen=True)
 class MeshData:
@@ -114,6 +187,7 @@ class ObjectExportRecord:
     material_slot_index: Optional[int] = None
     source_material_name: str = ""
 
+
 @dataclass(frozen=True)
 class SceneExportData:
     export_context: ExportContext
@@ -122,4 +196,3 @@ class SceneExportData:
     combined_mesh_data: Optional[MeshData] = None
     source_names: List[str] = field(default_factory=list)
     asset_export_name: str = ""
-
