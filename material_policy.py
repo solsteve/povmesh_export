@@ -19,7 +19,13 @@ class MaterialPolicy:
             export_options = ExportOptions()
 
         transparency = material.transparency
-        alpha_scalar = MaterialPolicy._clamp_unit(transparency.alpha_scalar, default=1.0)
+
+        # Be tolerant of partially populated Phase 3 / early Phase 4 materials.
+        alpha_scalar = transparency.alpha_scalar
+        if alpha_scalar is None:
+            alpha_scalar = 1.0
+
+        alpha_scalar = MaterialPolicy._clamp_unit(alpha_scalar, default=1.0)
         image_has_alpha = bool(transparency.image_has_alpha)
         alpha_source_kind = MaterialPolicy._infer_alpha_source_kind(alpha_scalar, image_has_alpha)
 
@@ -48,18 +54,25 @@ class MaterialPolicy:
 
     @staticmethod
     def should_emit_hollow(material: MaterialData) -> bool:
+        material = MaterialPolicy.normalize(material)
+
+        # Current Phase 4 rule:
+        # - SCALAR only -> real scalar transmission -> hollow/interior allowed
+        # - IMAGE only -> cutout/masked transparency -> no hollow/interior
+        # - SCALAR_TIMES_IMAGE -> currently downgraded to image-alpha-only in
+        #   writers_material.py, so wrapper must also avoid hollow/interior
         kind = material.transparency.alpha_source_kind
-        return kind in (
-            AlphaSourceKind.SCALAR,
-            AlphaSourceKind.SCALAR_TIMES_IMAGE,
-        )
+        return kind == AlphaSourceKind.SCALAR
 
     @staticmethod
     def should_emit_interior(material: MaterialData) -> bool:
+        material = MaterialPolicy.normalize(material)
         return material.ior is not None and MaterialPolicy.should_emit_hollow(material)
 
     @staticmethod
     def map_finish(material: MaterialData) -> dict[str, float]:
+        material = MaterialPolicy.normalize(material)
+
         roughness = MaterialPolicy._clamp_unit(material.roughness, default=1.0)
         specular = MaterialPolicy._clamp_unit(material.specular, default=0.0)
         metallic = MaterialPolicy._clamp_unit(material.metallic, default=0.0)
@@ -103,3 +116,4 @@ class MaterialPolicy:
         except (TypeError, ValueError):
             return default
         return max(0.0, min(1.0, value))
+    
