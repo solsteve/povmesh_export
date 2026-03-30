@@ -100,7 +100,13 @@ class MaterialWriter:
         image = material.image_texture
         assert image is not None
 
-        image_path = image.emitted_path or image.filepath_resolved or image.filepath_raw or image.image_name
+        image_path = (
+            image.emitted_path
+            or image.filepath_resolved
+            or image.filepath_raw
+            or image.image_name
+        )
+
         image_path = MaterialFormatters.escape_pov_string(image_path)
 
         f.write(f"#declare {material.export_name}_MAT = texture {{\n")

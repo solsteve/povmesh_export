@@ -58,6 +58,29 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
         default=True,
     )
 
+    texture_path_mode: EnumProperty(
+        name="Texture Path Mode",
+        description="How texture file paths are written into the exported POV-Ray SDL",
+        items=(
+            ("ABSOLUTE", "Absolute", "Write absolute texture file paths"),
+            ("RELATIVE", "Relative", "Write paths relative to the exported .pov file"),
+            ("COPY",     "Copy",     "Copy texture assets beside the export and write relative paths"),
+        ),
+        default="RELATIVE",
+    )
+
+    copy_texture_assets: BoolProperty(
+        name="Copy Texture Assets",
+        description="Copy texture files into a subdirectory beside the exported .pov file",
+        default=False,
+    )
+
+    texture_copy_subdir: StringProperty(
+        name="Texture Subdirectory",
+        description="Subdirectory used when copying texture assets",
+        default="textures",
+    )
+
     @classmethod
     def poll(cls, context):
         selected = getattr(context, "selected_objects", None)
@@ -86,6 +109,9 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
         box.prop(self, "export_materials")
         box.prop(self, "emit_debug_helpers")
         box.prop(self, "include_comments")
+        box.prop(self, "texture_path_mode")
+        box.prop(self, "copy_texture_assets")
+        box.prop(self, "texture_copy_subdir")
 
         info = layout.box()
         info.label(text="Each selected mesh is exported as its own local-space part.", icon="INFO")
@@ -100,6 +126,9 @@ class EXPORT_SCENE_OT_povmesh(Operator, ExportHelper):
                 export_materials=self.export_materials,
                 emit_debug_helpers=self.emit_debug_helpers,
                 include_comments=self.include_comments,
+                texture_path_mode=self.texture_path_mode,
+                copy_texture_assets=self.copy_texture_assets,
+                texture_copy_subdir=self.texture_copy_subdir,
             )
 
             if result == {"FINISHED"}:

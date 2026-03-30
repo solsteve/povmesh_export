@@ -20,6 +20,7 @@ from .export_types import (
 )
 from .material_extractor import MaterialExtractor
 from .transform_extractor import TransformExtractor
+from .texture_path_resolver import TexturePathResolver
 from .writers_material import MaterialWriter
 from .writers_mesh import MeshDeclarationWriter
 from .writers_object import ObjectSceneWriter
@@ -38,6 +39,9 @@ def export_povmesh(
     export_materials=True,
     emit_debug_helpers=True,
     include_comments=True,
+    texture_path_mode="RELATIVE",
+    copy_texture_assets=False,
+    texture_copy_subdir="textures",
 ):
     """
     Export selected Blender mesh objects as reusable POV-Ray parts plus one final asset.
@@ -59,6 +63,9 @@ def export_povmesh(
             emit_debug_helpers=bool(emit_debug_helpers),
             combine_objects=False,
             include_comments=bool(include_comments),
+            texture_path_mode=str(texture_path_mode),
+            copy_texture_assets=bool(copy_texture_assets),
+            texture_copy_subdir=str(texture_copy_subdir),
         )
 
         objects = MeshCollector.get_selected_mesh_objects(context)
@@ -158,6 +165,16 @@ class MeshExtractor:
                             part_export_name,
                         )
 
+                    if (material_data is not None
+                        and material_data.image_texture is not None
+                        and material_data.image_texture.filepath_resolved):
+                        material_data = TexturePathResolver.resolve_material_texture_paths(
+                            material_data,
+                            export_ctx,
+                            export_options,
+                        )
+
+
                 object_records.append(
                     ObjectExportRecord(
                         source_name=obj.name,
@@ -170,6 +187,7 @@ class MeshExtractor:
                         source_material_name=source_material_name,
                     )
                 )
+
 
         if not object_records:
             raise ExportError("Selected mesh objects contained no exportable faces.")

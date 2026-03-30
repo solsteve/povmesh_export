@@ -60,12 +60,11 @@ class ExportOptions:
     combine_objects: bool = False
     include_comments: bool = True
     transparency_mode: TransparencyMode = TransparencyMode.AUTO
-    texture_path_mode: TexturePathMode = TexturePathMode.ABSOLUTE
+    texture_path_mode: str = "RELATIVE"
     copy_texture_assets: bool = False
-    texture_asset_subdir: str = "textures"
     reuse_identical_meshes: bool = False
     preserve_custom_normals: bool = False
-
+    texture_copy_subdir: str = "textures"
 
 @dataclass(frozen=True)
 class TransformData:
@@ -83,6 +82,7 @@ class TexturePathData:
     emitted_path: str = ""
     path_mode: TexturePathMode = TexturePathMode.ABSOLUTE
     copied: bool = False
+    emitted_path: str = None
 
 
 @dataclass(frozen=True)

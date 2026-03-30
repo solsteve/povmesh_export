@@ -116,4 +116,4 @@ class MaterialPolicy:
         except (TypeError, ValueError):
             return default
         return max(0.0, min(1.0, value))
-    
+
