@@ -65,6 +65,48 @@ class MaterialWriter:
         )
 
     @staticmethod
+    def _ambient_scale_for_material(material: MaterialData) -> float:
+        if material.image_texture is not None:
+            return 0.0
+        if MaterialWriter._should_use_emission_as_pigment(material):
+            return 1.0
+        return 0.50
+
+    @staticmethod
+    def _effective_emission_ambient(material: MaterialData) -> tuple[float, float, float] | None:
+        if not material.emission.is_emissive or material.emission.color is None:
+            return None
+
+        scale = MaterialWriter._ambient_scale_for_material(material)
+        if scale <= 0.0:
+            return None
+
+        er, eg, eb = material.emission.color
+        strength = max(0.0, float(material.emission.strength))
+
+        return (
+            er * strength * scale,
+            eg * strength * scale,
+            eb * strength * scale,
+        )
+
+
+    @staticmethod
+    def _is_near_black(color) -> bool:
+        if color is None:
+            return True
+        r, g, b = color
+        return max(float(r), float(g), float(b)) < 0.02
+
+    @staticmethod
+    def _should_use_emission_as_pigment(material: MaterialData) -> bool:
+        return (
+            material.emission.is_emissive
+            and material.emission.color is not None
+            and MaterialWriter._is_near_black(material.base_color)
+        )
+
+    @staticmethod
     def _linear_to_srgb_channel(c: float) -> float:
         c = max(0.0, min(1.0, float(c)))
         if c <= 0.0031308:
@@ -75,7 +117,11 @@ class MaterialWriter:
     def _write_solid_color_material(f: TextIO, material: MaterialData) -> None:
         assert material.base_color is not None
 
-        r_lin, g_lin, b_lin = material.base_color
+        if MaterialWriter._should_use_emission_as_pigment(material):
+            r_lin, g_lin, b_lin = material.emission.color
+        else:
+            r_lin, g_lin, b_lin = material.base_color
+
         r = MaterialWriter._linear_to_srgb_channel(r_lin)
         g = MaterialWriter._linear_to_srgb_channel(g_lin)
         b = MaterialWriter._linear_to_srgb_channel(b_lin)
@@ -203,6 +249,17 @@ class MaterialWriter:
             handle.write(f"    // emission == emission color: <{r:.3f}, {g:.3f}, {b:.3f}>\n")
             handle.write(f"    // emission_strength == emission strength: {material.emission.strength:.3f}\n")
 
+        if material.emission.is_emissive and material.emission.color is not None:
+            handle.write(
+                f"    // emission_ambient_scale == {MaterialWriter._ambient_scale_for_material(material):.3f}\n"
+            )
+
+        if material.image_texture is not None and material.emission.is_emissive:
+            handle.write("    // emission_texture_fallback == no ambient boost applied\n")
+
+        if MaterialWriter._should_use_emission_as_pigment(material):
+            handle.write("    // emission_pigment_override == on\n")
+
         handle.write("    finish {\n")
         handle.write(f"        diffuse {values['diffuse']:.6f}\n")
         handle.write(f"        phong {values['phong']:.6f}\n")
@@ -211,13 +268,22 @@ class MaterialWriter:
         handle.write(f"        reflection {values['reflection']:.6f}\n")
         handle.write(f"        roughness {values['roughness']:.6f}\n")
 
-        if material.emission.is_emissive and material.emission.color is not None:
-            er, eg, eb = material.emission.color
-            strength = values["emission_strength"]
+        #if material.emission.is_emissive and material.emission.color is not None:
+        #    er, eg, eb = material.emission.color
+        #    strength = values["emission_strength"]
+        #    handle.write(
+        #        f"        ambient <{MaterialFormatters.float(er * strength)}, "
+        #        f"{MaterialFormatters.float(eg * strength)}, "
+        #        f"{MaterialFormatters.float(eb * strength)}>\n"
+        #    )
+
+        ambient_rgb = MaterialWriter._effective_emission_ambient(material)
+        if ambient_rgb is not None:
+            ar, ag, ab = ambient_rgb
             handle.write(
-                f"        emission <{MaterialFormatters.float(er * strength)}, "
-                f"{MaterialFormatters.float(eg * strength)}, "
-                f"{MaterialFormatters.float(eb * strength)}>\n"
+                f"        ambient <{MaterialFormatters.float(ar)}, "
+                f"{MaterialFormatters.float(ag)}, "
+                f"{MaterialFormatters.float(ab)}>\n"
             )
 
         handle.write("    }\n")
